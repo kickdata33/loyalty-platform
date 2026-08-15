@@ -1,0 +1,17 @@
+rules_version = '2';
+
+// Bootstrap-state Firestore rules — default deny, nothing else.
+//
+// No domain collections exist yet (Phase 1+ per FINAL-ARCHITECTURE.md §33 introduces them).
+// Security Rules are defense-in-depth only (§3, §10, §26) — they never become the primary
+// authorization boundary for business-sensitive writes; that boundary is server-side application
+// code deriving `merchantId`/role from verified auth context. Do not add broad `allow` rules here;
+// Phase 1 replaces this file with per-collection tenant-isolation rules driven by
+// `docs/architecture/FINAL-ARCHITECTURE.md` §3, §5, and §9.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

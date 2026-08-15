@@ -38,13 +38,18 @@ export interface SyncStaffCustomClaimsParams {
  *
  * - Created or updated with `status: 'ACTIVE'` → claims set to
  *   `{ merchantId, role, staffUserId, branchScope }`.
- * - Suspended (`status: 'SUSPENDED'`) or deleted → claims cleared entirely. A staff/owner with no
- *   `merchantId`/`role` claim fails closed at `buildAuthContext` (§8/§10) — they simply can no
- *   longer act as staff of any merchant, even if their Firebase Auth account still exists.
- *
- * Custom claims are cached client-side until the ID token is refreshed (§8) — callers that need
- * an immediate effect (e.g. a test asserting on the very next request) must force a token
- * refresh, this function only updates the server-side record Firebase Auth hands out on refresh.
+ * - Suspended (`status: 'SUSPENDED'`) or deleted → claims cleared AND all of the user's refresh
+ *   tokens are revoked (`auth.revokeRefreshTokens`). Clearing claims alone is not enough: a
+ *   suspended staff member's *already-issued* ID Token stays cryptographically valid — with the
+ *   old claims still baked in — for up to its natural ~1 hour expiry, because Firebase only
+ *   re-evaluates custom claims when a token is next minted (§8's documented client-side claims
+ *   cache applies here too, just server-side). Revoking refresh tokens sets the account's
+ *   `tokensValidAfterTime`, which `verifyIdToken(token, /* checkRevoked *\/ true)` in
+ *   `src/lib/api/auth.ts` checks on every request — so a suspended/removed staff member loses API
+ *   access immediately, not after up to an hour. Found during the Phase 2 security review;
+ *   role/branchScope changes that keep `status: 'ACTIVE'` do NOT revoke — only actual access
+ *   removal does, matching §8's existing "force refresh after a role change" guidance rather than
+ *   forcing a full re-login for a routine promotion/demotion.
  */
 export async function syncStaffCustomClaims(
   auth: Auth,
@@ -63,6 +68,7 @@ export async function syncStaffCustomClaims(
     return;
   }
 
-  // Deleted, or suspended: revoke all custom claims for this Auth user.
+  // Deleted, or suspended: revoke all custom claims AND all currently-valid sessions.
   await auth.setCustomUserClaims(target.authUid, null);
+  await auth.revokeRefreshTokens(target.authUid);
 }

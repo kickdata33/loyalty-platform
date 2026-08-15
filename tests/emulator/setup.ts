@@ -7,6 +7,8 @@ import { getDb } from "@/modules/shared/firestore";
 import type { AuthContext } from "@/modules/shared/types";
 import { createStaffUser } from "@/modules/staff/service";
 
+import { getIdTokenForExistingUid } from "./client-auth";
+
 /**
  * Shared helpers for tests that run against the Firebase emulators (Auth + Firestore), started
  * via `npm run test:emulator` (`firebase emulators:exec`, which sets `FIRESTORE_EMULATOR_HOST` /
@@ -107,6 +109,30 @@ export async function addStaffFixture(
     branchScope: [],
   };
   return { authUid, staffUserId, ctx };
+}
+
+/** Real, verifiable ID Token for a fixture's `authUid` — for tests that call API Route Handlers
+ * directly and need a token `getAdminAuth().verifyIdToken()` will actually accept (see
+ * `./client-auth.ts`). */
+export async function idTokenFor(authUid: string): Promise<string> {
+  return getIdTokenForExistingUid(authUid);
+}
+
+/** Builds a `Request` with a JSON body and/or a Bearer token — shared by every API route test. */
+export function jsonRequest(
+  url: string,
+  init: (Omit<RequestInit, "body"> & { token?: string; json?: unknown }) = {},
+): Request {
+  const { token, json, headers, ...rest } = init;
+  return new Request(url, {
+    ...rest,
+    headers: {
+      ...(json !== undefined ? { "content-type": "application/json" } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...headers,
+    },
+    body: json !== undefined ? JSON.stringify(json) : undefined,
+  });
 }
 
 export { getAdminAuth, getDb };

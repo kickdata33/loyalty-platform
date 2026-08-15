@@ -4,7 +4,13 @@ import { createDefaultSubscription } from "@/modules/billing-entitlement/service
 import { writeAuditLog } from "@/modules/audit/service";
 import { requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
-import type { BranchRecord, MerchantRecord, SegmentRulesConfig, StaffLimits } from "@/modules/merchant/types";
+import type {
+  BrandingConfig,
+  BranchRecord,
+  MerchantRecord,
+  SegmentRulesConfig,
+  StaffLimits,
+} from "@/modules/merchant/types";
 import { ConflictError, NotFoundError, ValidationError } from "@/modules/shared/errors";
 import { branchesCollection, COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import type { AuthContext } from "@/modules/shared/types";
@@ -183,4 +189,85 @@ export async function listBranches(
   requirePermission(ctx, PERMISSIONS.MEMBER_VIEW, merchantId);
   const snap = await branchesCollection(merchantId).get();
   return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<BranchRecord, "id">) }));
+}
+
+const HTTP_URL_PATTERN = /^https?:\/\//i;
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{3,8}$/;
+
+/**
+ * Updates a merchant's branding config (§33 Phase 2: "Branding config + template"). Owner and
+ * Manager both hold `BRANDING_MANAGE` (§9) — Staff does not.
+ *
+ * Validates URL scheme/color format server-side (found during the Phase 2 security review):
+ * `logoUrl`/`coverUrl` are rendered as an `<img src>` in the Customer Portal — without this check
+ * an Owner account (malicious or compromised) could set a `javascript:`/`data:` value. Low
+ * severity given the render context (an `<img src>`, not `dangerouslySetInnerHTML`) and that it
+ * only affects that merchant's own storefront, but cheap to close outright.
+ */
+export async function updateMerchantBranding(
+  ctx: AuthContext,
+  merchantId: string,
+  branding: BrandingConfig,
+): Promise<void> {
+  requirePermission(ctx, PERMISSIONS.BRANDING_MANAGE, merchantId);
+
+  if (branding.logoUrl !== undefined && !HTTP_URL_PATTERN.test(branding.logoUrl)) {
+    throw new ValidationError("logoUrl must be an http(s) URL.");
+  }
+  if (branding.coverUrl !== undefined && !HTTP_URL_PATTERN.test(branding.coverUrl)) {
+    throw new ValidationError("coverUrl must be an http(s) URL.");
+  }
+  if (branding.primaryColor !== undefined && !HEX_COLOR_PATTERN.test(branding.primaryColor)) {
+    throw new ValidationError("primaryColor must be a hex color, e.g. #0f172a.");
+  }
+
+  const ref = getDb().collection(COLLECTIONS.merchants).doc(merchantId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new NotFoundError(`Merchant ${merchantId} not found.`);
+  const before = (snap.data() as MerchantRecord).branding;
+
+  await ref.update({ branding });
+
+  await writeAuditLog({
+    merchantId,
+    actorType: "staff",
+    actorId: ctx.authUid,
+    action: "merchant.branding_updated",
+    targetType: "merchant",
+    targetId: merchantId,
+    before,
+    after: branding,
+  });
+}
+
+/**
+ * The one deliberately-public read in this module — used by the Customer Portal skeleton
+ * (`/m/[merchantSlug]`, §2, §33) to render a merchant's storefront branding before any customer
+ * identity exists (real customer auth is Phase 7). Takes no `AuthContext` on purpose: this is not
+ * a staff-authorization boundary, it's the same "public storefront" concept every merchant's
+ * platform already exposes by having a public slug/URL at all.
+ *
+ * Returns ONLY `name`/`slug`/`branding` — never `staffLimits`, `ownerUserId`,
+ * `segmentRulesConfig`, or anything else on the merchant document that isn't meant to be public.
+ */
+export interface PublicMerchantProfile {
+  merchantId: string;
+  name: string;
+  slug: string;
+  branding: BrandingConfig;
+}
+
+export async function getPublicMerchantProfileBySlug(
+  slug: string,
+): Promise<PublicMerchantProfile | null> {
+  const snap = await getDb()
+    .collection(COLLECTIONS.merchants)
+    .where("slug", "==", slug)
+    .limit(1)
+    .get();
+  if (snap.empty) return null;
+
+  const doc = snap.docs[0];
+  const data = doc.data() as MerchantRecord;
+  return { merchantId: doc.id, name: data.name, slug: data.slug, branding: data.branding };
 }

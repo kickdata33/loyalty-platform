@@ -5,13 +5,10 @@ import {
   getApps,
   initializeApp,
 } from "firebase/app";
+import { type Auth, connectAuthEmulator, getAuth } from "firebase/auth";
 
 /**
  * Firebase Web SDK client bootstrap.
- *
- * Bootstrap stage only — no auth/Firestore/storage service instances are exported here yet.
- * Add `getAuth()`/`getFirestore()`/`getStorage()` wrappers here once a Phase actually needs them,
- * so every surface shares the same singleton app instance.
  *
  * All config comes from `NEXT_PUBLIC_*` env vars (see `.env.example`) — never hard-code Firebase
  * config values in source (FINAL-ARCHITECTURE.md §1, §26).
@@ -74,4 +71,27 @@ export function getFirebaseApp(): FirebaseApp {
   if (cachedApp) return cachedApp;
   cachedApp = getApps().length > 0 ? getApp() : initializeApp(readConfig());
   return cachedApp;
+}
+
+let cachedAuth: Auth | undefined;
+let emulatorConnected = false;
+
+/**
+ * Returns the singleton Firebase Auth client instance. Firebase Auth SDK owns all token
+ * persistence/lifecycle from here on (§8 Phase 2 Architecture Decision) — this codebase never
+ * reads/writes the ID token itself; callers always go through `user.getIdToken()` (see
+ * `src/lib/api/client.ts`).
+ */
+export function getFirebaseAuth(): Auth {
+  if (cachedAuth) return cachedAuth;
+  cachedAuth = getAuth(getFirebaseApp());
+
+  if (!emulatorConnected && process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST) {
+    connectAuthEmulator(cachedAuth, `http://${process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST}`, {
+      disableWarnings: true,
+    });
+    emulatorConnected = true;
+  }
+
+  return cachedAuth;
 }

@@ -8,9 +8,12 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run tests/unit",
+    "test:emulator": "firebase emulators:exec --only auth,firestore \"vitest run tests/emulator tests/security-rules\"",
+    "test:all": "npm run test && npm run test:emulator",
     "test:watch": "vitest",
-    "emulators": "firebase emulators:start --only auth,firestore"
+    "emulators": "firebase emulators:start --only auth,firestore",
+    "emulators:functions": "npm --prefix functions run build && firebase emulators:start --only auth,firestore,functions"
   },
   "dependencies": {
     "firebase": "^12.17.1",
@@ -21,6 +24,7 @@
     "server-only": "^0.0.1"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

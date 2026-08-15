@@ -1,17 +1,100 @@
 rules_version = '2';
 
-// Bootstrap-state Firestore rules — default deny, nothing else.
+// Phase 1 Firestore Security Rules (FINAL-ARCHITECTURE.md §3, §5, §7, §9, §10, §26).
 //
-// No domain collections exist yet (Phase 1+ per FINAL-ARCHITECTURE.md §33 introduces them).
-// Security Rules are defense-in-depth only (§3, §10, §26) — they never become the primary
-// authorization boundary for business-sensitive writes; that boundary is server-side application
-// code deriving `merchantId`/role from verified auth context. Do not add broad `allow` rules here;
-// Phase 1 replaces this file with per-collection tenant-isolation rules driven by
-// `docs/architecture/FINAL-ARCHITECTURE.md` §3, §5, and §9.
+// Security Rules are defense-in-depth ONLY — the primary authorization boundary is server-side
+// application code deriving merchantId/role from verified custom claims (§3, §10, §26). These
+// rules exist to make sure that even a real-time client listener reading its own data directly
+// can never cross a tenant boundary, and that no business-sensitive write is ever possible from
+// the client. Every collection below denies ALL client writes — every write in this codebase goes
+// through server-side service functions using the Admin SDK, which bypasses these rules entirely
+// by design (Admin SDK is trusted server code, not subject to Security Rules).
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && request.auth.token.superAdmin == true;
+    }
+
+    // "Active staff of merchantId" — role/merchantId claims are set exclusively by the
+    // onStaffUserWrite Cloud Function trigger (§8, §10, §32), never by the client, so trusting
+    // request.auth.token here for a *read-only* allow is safe.
+    function isActiveStaffOfMerchant(merchantId) {
+      return isSignedIn()
+        && request.auth.token.merchantId == merchantId
+        && request.auth.token.role in ['OWNER', 'MANAGER', 'STAFF'];
+    }
+
+    // platformCustomers / customerIdentities — 100% deny-all client access, no exceptions, not
+    // even Super Admin through the normal client SDK (§6, §7: "ไม่มี client อ่านได้เลย แม้แต่
+    // Super Admin ผ่าน UI ปกติ"). Only Admin SDK server code ever touches these.
+    match /platformCustomers/{customerId} {
       allow read, write: if false;
     }
+    match /customerIdentities/{identityId} {
+      allow read, write: if false;
+    }
+
+    // auditLogs — append-only, server-only, no client read or write ever (§18). Even Super Admin
+    // reads audit history through a dedicated server-side view in a later phase, not raw client
+    // reads of this collection.
+    match /auditLogs/{logId} {
+      allow read, write: if false;
+    }
+
+    // merchants/{merchantId} + branches — readable by that merchant's own active staff (or
+    // superAdmin); all writes are server-only (settings/branding changes go through the service
+    // layer so they can be validated, permission-checked, and audited).
+    match /merchants/{merchantId} {
+      allow read: if isActiveStaffOfMerchant(merchantId) || isSuperAdmin();
+      allow write: if false;
+
+      match /branches/{branchId} {
+        allow read: if isActiveStaffOfMerchant(merchantId) || isSuperAdmin();
+        allow write: if false;
+      }
+    }
+
+    // staffUsers/{staffUserId} — readable only by staff of the SAME merchant as the document
+    // (not the reader's own claims path, since staff list membership is a property of the
+    // resource, not the requester). Writes are server-only; the only code that ever writes here
+    // is the staff service layer, and the only code that reacts to those writes is
+    // onStaffUserWrite (functions/src/index.ts) — this rule guarantees no other path exists.
+    match /staffUsers/{staffUserId} {
+      allow read: if isActiveStaffOfMerchant(resource.data.merchantId) || isSuperAdmin();
+      allow write: if false;
+    }
+
+    // memberships/{membershipId} — same pattern: readable by staff of the membership's own
+    // merchant, never cross-tenant. Business-sensitive writes (points, profile, tags, ...) are
+    // always server-only (§26).
+    match /memberships/{membershipId} {
+      allow read: if isActiveStaffOfMerchant(resource.data.merchantId) || isSuperAdmin();
+      allow write: if false;
+    }
+
+    // subscriptions/{merchantId} — readable by that merchant's own staff (any role may see their
+    // own plan/status even though only Owner can change it, §9); writes are Super-Admin-only
+    // server actions (§25).
+    match /subscriptions/{merchantId} {
+      allow read: if isActiveStaffOfMerchant(merchantId) || isSuperAdmin();
+      allow write: if false;
+    }
+
+    // packages/{packageId} — public read for any signed-in user (needed to display plan
+    // comparisons); managed by Super Admin only, server-side (§25).
+    match /packages/{packageId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Everything else stays denied by Firestore's own default (no matching rule = no access) —
+    // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
+    // collections Phase 1 actually creates; add a new explicit match block, not a broad wildcard,
+    // when a later phase introduces a new collection.
   }
 }

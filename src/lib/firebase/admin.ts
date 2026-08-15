@@ -1,6 +1,7 @@
 import "server-only";
 
 import { type App, applicationDefault, getApp, getApps, initializeApp } from "firebase-admin/app";
+import { type Auth, getAuth } from "firebase-admin/auth";
 
 /**
  * Firebase Admin SDK bootstrap — server-side only (never import from a Client Component).
@@ -51,4 +52,13 @@ export function getFirebaseAdminApp(): App {
     : initializeApp({ credential: applicationDefault(), projectId });
 
   return cachedApp;
+}
+
+let cachedAuth: Auth | undefined;
+
+/** Returns the singleton Firebase Admin Auth service (custom claims, ID token verification). */
+export function getAdminAuth(): Auth {
+  if (cachedAuth) return cachedAuth;
+  cachedAuth = getAuth(getFirebaseAdminApp());
+  return cachedAuth;
 }

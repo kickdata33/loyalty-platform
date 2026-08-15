@@ -1,0 +1,23 @@
+{
+  "name": "functions",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Firebase Cloud Functions — Phase 1: onStaffUserWrite custom-claims trigger only.",
+  "main": "lib/functions/src/index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.2.0",
+    "firebase-functions": "^7.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5"
+  }
+}

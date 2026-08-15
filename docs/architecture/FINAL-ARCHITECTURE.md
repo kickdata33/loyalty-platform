@@ -524,6 +524,32 @@ Firestore Security Rules อ่านได้แค่ Firebase Auth token — 
 - Custom claims มีขนาดจำกัด (< 1000 bytes) — v1 สมมติ staff 1 คนต่อ 1 merchant เพื่อความง่าย (multi-merchant staff เป็น future — ดูหัวข้อ 35)
 - Custom claims cache ฝั่ง client จนกว่าจะ refresh token — ต้อง force refresh token หลังเปลี่ยน role/permission หรือหลังสมัคร merchant ใหม่
 
+### Staff/Owner API Authentication Transport (Phase 2 Architecture Decision — Resolved, 2026-08-15)
+
+**ขอบเขต**: มตินี้ครอบคลุมเฉพาะวิธีที่ Staff/Owner authenticate เข้า Next.js API Routes เท่านั้น — ไม่กระทบ Customer/LINE flow ด้านบน (ยังใช้ Firebase Custom Token + `signInWithCustomToken` ตามเดิมทุกประการ) และไม่กระทบ Super Admin เอกสารฉบับก่อนหน้านี้ไม่เคยระบุ transport mechanism ที่เป็นรูปธรรมสำหรับ Staff/Owner API call ไว้เลย (มีแค่หลักการทั่วไปใน §3: "authenticated session/verified custom claims") — มตินี้เติมช่องว่างนั้นสำหรับ Phase 2 โดยไม่ override ข้อความใดที่มีอยู่เดิม:
+
+```
+Firebase Client Auth (email/password หรือ Google)
+  → getIdToken() ผ่าน Firebase Auth SDK เท่านั้น
+  → shared authenticated API client แนบ header ก่อนทุก request:
+      Authorization: Bearer <Firebase ID Token>
+  → Next.js API Route
+  → Firebase Admin verifyIdToken() (reject ถ้า invalid/expired/revoked)
+  → verified uid → resolve StaffUser server-side จาก uid (ไม่ใช่จาก client input)
+  → buildAuthContext() (หัวข้อ 10) → Authorization Service (RBAC + tenant isolation) ตามเดิม
+```
+
+**Security constraints (ยึดหลักการเดิมของเอกสารทั้งฉบับ — ไม่ใช่กฎใหม่ เป็นการนำหลักการเดิมมาระบุให้เจาะจงกับ transport นี้)**:
+
+- ห้าม trust `uid` จาก request body/query/header อื่นใดนอกจากผลของ `verifyIdToken()` เท่านั้น
+- ห้าม trust `role`/`permissions` จาก client โดยเด็ดขาด — resolve จาก StaffUser document + custom claims ฝั่ง server เสมอ (§9, §10)
+- ห้าม trust `merchantId` จาก client เพื่อใช้ authorize คำขอ — merchant context ใดๆ ที่ client ส่งมาถือเป็นแค่ "requested resource" เท่านั้น ต้อง validate สิทธิ์จริงต่อ merchant นั้นฝั่ง server เสมอผ่าน `requirePermission()`/`requireOwner()` (§3, §10) เหมือนที่ Phase 1 Authorization Service ทำอยู่แล้ว
+- ทุก protected API route ต้อง verify Firebase ID Token ฝั่ง server ก่อนเสมอ ไม่มีข้อยกเว้น
+- Token persistence/lifecycle (เก็บ, refresh, revoke) เป็นหน้าที่ของ Firebase Auth SDK ทั้งหมด — **ห้ามเก็บ ID Token เองใน `localStorage`/`sessionStorage`**; shared API client ดึง token สดผ่าน SDK ก่อนแนบทุก request เท่านั้น
+- V1 (Phase 2) ยังไม่ใช้ custom session cookie สำหรับ flow นี้ — ใช้ Bearer ID Token ตรงทุกครั้ง จนกว่าจะมีเหตุผลด้าน security/UX ที่ต้องเปลี่ยนและได้รับการอนุมัติใหม่
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: รูปแบบนี้เป็นการนำหลักการที่ล็อกไว้แล้วมาปรับใช้กับ transport ที่เป็นรูปธรรม — server เป็น authority เดียวสำหรับ identity เสมอ (§3, §10, §26), ไม่ trust ค่าใดๆ จาก client โดยตรง (หลักการเดียวกับ §21 LINE ID Token verification ที่ใช้กับฝั่ง Customer), และไม่มีข้อความใดในเอกสารฉบับนี้กำหนดหรือห้าม transport mechanism แบบใดแบบหนึ่งไว้เป็นการเฉพาะสำหรับ Staff/Owner API มาก่อน
+
 ---
 
 ## 9. Permission Matrix V1 (LOCKED)
@@ -1477,6 +1503,7 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 | v4 | เพิ่ม Final Security Notes 2 ข้อ: (1) บังคับ Backend verify LINE ID Token เสมอ ห้าม trust client-supplied userId, (2) แยก Customer Portal ออกจาก LIFF-specific implementation ผ่าน `LineClientProvider` abstraction | Current (เพิ่มเติมจาก v1-v3 ไม่ override) |
 | Permission Matrix V1 | ล็อก Permission Matrix ฉบับเต็มของ Owner/Manager/Staff + Staff Limits ก่อนเริ่ม Phase 1 — override ข้อความ "Permission list ตามข้อ 24" ที่กว้างๆ ใน v1 เดิม | Current (Locked) |
 | **FINAL-ARCHITECTURE.md (เอกสารนี้)** | รวมทุกเวอร์ชันข้างต้นเป็นฉบับเดียว self-contained ตามลำดับ override: Permission Matrix > v4 > v3 > v2 > v1 — เป็น Source of Truth ปัจจุบันของโปรเจกต์ ใช้แทนการอ้างอิงเอกสาร v1-v4 แยก | **Authoritative — ใช้ไฟล์นี้เป็นหลัก** |
+| Phase 2 Staff API Auth Decision | เพิ่มหัวข้อ 8: "Staff/Owner API Authentication Transport" — เอกสารก่อนหน้านี้ไม่เคยระบุ transport mechanism ที่เป็นรูปธรรมสำหรับ Staff/Owner เรียก API Route; มติกำหนดให้ใช้ `Authorization: Bearer <Firebase ID Token>` + `verifyIdToken()` ฝั่ง server ต่อทุก protected API route, ห้ามเก็บ token เองใน localStorage, ยังไม่ใช้ custom session cookie ใน V1 — เป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 
 ---
 

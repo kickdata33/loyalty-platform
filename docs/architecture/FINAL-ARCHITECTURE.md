@@ -804,6 +804,29 @@ Customer เปิดคูปอง → แสดง QR/code (status ยัง�
 
 Coupon Code (ลูกค้ากรอกโค้ดเอง) และ QR-only ต้องรองรับทั้งคู่ (implementation cost ต่ำ)
 
+### Coupon Usage Limit & Redemption Atomicity — Phase 5 Architecture Decision (Locked, 2026-08-16)
+
+**ขอบเขต**: มตินี้ชี้แจงความหมายของคำว่า "Usage Limit" ในรายการ Conditions ด้านบน ที่เอกสารก่อนหน้านี้ไม่เคยนิยามแยกจาก "Total Limit"/"Per Member Limit" ไว้ชัดเจน และล็อกกติกา redemption atomicity สำหรับ V1 — ไม่กระทบ field/schema อื่นของ `couponInstances` ใน §5 ที่มีอยู่แล้ว ไม่ override ข้อความใดที่มีอยู่เดิม:
+
+- สำหรับ V1: **1 `couponInstances/{instanceId}` = redeem/use ได้ 1 ครั้งเท่านั้น** — "Usage Limit" ในความหมายของ V1 คือขอบเขตนี้เอง ไม่ใช่แนวคิดที่แยกจาก "Total Limit" (จำนวน instance ทั้งหมดที่ template สร้างได้) หรือ "Per Member Limit" (จำนวนครั้งที่สมาชิกคนเดียวรับ template นี้ได้) — **ไม่เพิ่ม field ใหม่** เช่น `maxUses`/`remainingUses` และ**ไม่เปลี่ยน** `status` enum จาก `'AVAILABLE'|'USED'|'EXPIRED'` ที่ระบุไว้แล้วใน §5
+- Redemption (ขั้น "Redeem" ของ Coupon = ขั้นใช้จริงตาม Redemption Flow ด้านบน, เปลี่ยนสถานะ AVAILABLE→USED) ต้องเป็น **server-side atomic transaction เดียวจบ** (Firestore transaction) และ **idempotent เสมอ** (idempotencyKey ตาม §27) — ป้องกัน double redemption จาก concurrent request (สอง staff scan คูปองใบเดียวกันพร้อมกัน — ตรงกับ threat ที่ระบุไว้แล้วใน §26) และป้องกัน replay จาก network retry/double-submit
+- Instance ที่มี `status='USED'` แล้ว **ต้องไม่มีทางถูก redeem ซ้ำได้อีก** ไม่ว่าจะ lookup ผ่าน code, QR, หรือ instance id — ตรวจ status ภายใน transaction เดียวกับการเขียนเสมอ (ไม่ใช่ check-then-write แยก step, หลักการเดียวกับ §9's Staff Limits)
+- **Multi-use coupon (1 instance ใช้ได้หลายครั้ง) ไม่ implement ใน V1** เว้นแต่จะมีการอัปเดตเอกสารนี้ในอนาคตให้ระบุ requirement นั้นไว้ชัดเจนก่อน — ห้าม implement เองโดยไม่ขออนุมัติ schema change ใหม่
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: ตรงกับ `couponInstances.status` enum ที่ปิดไว้แล้วที่ §5 (ไม่มีค่าที่สามหรือ counter field ใดๆ) และตรงกับ Redemption Flow pseudocode ด้านบนเอง ("Staff confirm → status=USED") ซึ่งเขียนเป็น one-way transition อยู่แล้ว — มตินี้เพียงระบุความหมายของคำที่เอกสารไม่เคยนิยามแยกไว้ให้ตรงกับ schema ที่มีอยู่จริง ไม่ใช่การเปลี่ยนกติกาใด
+
+### Coupon Expiration — Lazy Validation for V1 (Phase 5 Architecture Decision, Locked 2026-08-16)
+
+**ขอบเขต**: มตินี้ระบุจังหวะเวลาที่ `couponExpiration` (ปรากฏในตาราง Scheduled ของหัวข้อ 32) จะถูกสร้างเป็น Cloud Function จริง — ยังไม่ใช่ Phase 5/V1 — ไม่กระทบ field `expiresAt`/`status` ที่มีอยู่แล้วใน §5 ไม่ลบหรือแก้แถว `couponExpiration` ในตารางหัวข้อ 32 และไม่กระทบ scheduled job อื่นในตารางเดียวกัน:
+
+- V1 ใช้ **Lazy Expiration เท่านั้น** — ไม่มี Scheduled Cloud Function/sweep job สำหรับ coupon ใน Phase 5
+- ทุก operation ที่เกี่ยวข้องกับ claim/redeem/use ของ coupon **ต้อง validate `expiresAt` เทียบกับเวลา ณ ขณะนั้นฝั่ง server (`serverNow`) ทุกครั้ง** ภายใน transaction เดียวกับการเขียนจริง — ถ้า `expiresAt <= serverNow` ต้อง reject การ redeem/use เสมอ ไม่ว่า `status` field ที่เก็บไว้จะยังเป็น `AVAILABLE` อยู่ก็ตาม
+- UI สามารถ derive/แสดงสถานะ "หมดอายุ" จาก `expiresAt` ได้เพื่อ UX (เช่น ไม่โชว์ปุ่ม "ใช้" ให้คูปองที่หมดอายุแล้ว) แต่**ฝั่ง UI ไม่ใช่ security boundary** — การตรวจสอบฝั่ง server เป็น authoritative เสมอ ตรงตามหลักการเดิมของหัวข้อ 10 ("Frontend permission list ใช้แค่ซ่อน/แสดง UI (UX เท่านั้น ไม่ใช่ security boundary)")
+- `status` ที่เก็บใน Firestore อาจค้างเป็น `AVAILABLE` แม้เลย `expiresAt` ไปแล้ว จนกว่าจะถูก touch โดย redeem attempt หรือ scheduled sweep ที่จะเพิ่มใน phase หลัง (deferred item) — ยอมรับได้ใน V1 เพราะไม่กระทบความถูกต้องของ transaction ใดๆ
+- ต้องมี automated test ครอบคลุม boundary condition ของเวลา (เช่น `expiresAt` เท่ากับ `serverNow` เป๊ะ, `expiresAt` เพิ่งผ่านไปหนึ่งวินาที) สำหรับทั้งกรณี expired และ not-expired
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: `couponExpiration` ในตารางหัวข้อ 32 ยังคงอยู่ในเอกสารตามเดิม — มตินี้ระบุแค่จังหวะเวลาที่จะสร้าง job นี้จริง (deferred ไปยัง phase ที่มี scheduled-infrastructure เป็นงานปกติอยู่แล้ว เช่น พร้อมกับ `pointsExpiration`/`balanceReconciliation`) ไม่ใช่การยกเลิก requirement — สอดคล้องกับหลัก "หลีกเลี่ยง premature infrastructure complexity" ที่ระบุไว้แล้วในหัวข้อ 0 Pilot Strategy และสอดคล้องกับ pattern เดียวกับที่ Reward's Voucher Expiration (§13) ใช้ตั้งแต่ Phase 4 (lazy validation ที่ redeem/use time เท่านั้น เช่นกัน)
+
 ---
 
 ## 15. Visit / Activity Model
@@ -1390,6 +1413,8 @@ Composite indexes ที่ต้องมี (ยืนยัน/ปรับ�
 
 Next.js API Route ใช้สำหรับ synchronous request ที่ต้องการ response ทันที (เช่น redeem flow ที่ staff กด confirm) — Cloud Function (background) ใช้สำหรับงานที่ไม่ต้องรอ response ของ user โดยตรง
 
+**หมายเหตุ (Phase 5 Architecture Decision, Locked 2026-08-16)**: `couponExpiration` ในตารางข้างต้นยังไม่ถูกสร้างจริงใน Phase 5/V1 — ใช้ Lazy Expiration แทน (validate `expiresAt` ที่ redeem/use time ทุกครั้ง) รายละเอียดเต็มอยู่ที่หัวข้อ 14 "Coupon Expiration — Lazy Validation for V1"
+
 ### Future POS Integration Point (ออกแบบไว้ ไม่ implement ใน V1)
 
 ```
@@ -1504,6 +1529,7 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 | Permission Matrix V1 | ล็อก Permission Matrix ฉบับเต็มของ Owner/Manager/Staff + Staff Limits ก่อนเริ่ม Phase 1 — override ข้อความ "Permission list ตามข้อ 24" ที่กว้างๆ ใน v1 เดิม | Current (Locked) |
 | **FINAL-ARCHITECTURE.md (เอกสารนี้)** | รวมทุกเวอร์ชันข้างต้นเป็นฉบับเดียว self-contained ตามลำดับ override: Permission Matrix > v4 > v3 > v2 > v1 — เป็น Source of Truth ปัจจุบันของโปรเจกต์ ใช้แทนการอ้างอิงเอกสาร v1-v4 แยก | **Authoritative — ใช้ไฟล์นี้เป็นหลัก** |
 | Phase 2 Staff API Auth Decision | เพิ่มหัวข้อ 8: "Staff/Owner API Authentication Transport" — เอกสารก่อนหน้านี้ไม่เคยระบุ transport mechanism ที่เป็นรูปธรรมสำหรับ Staff/Owner เรียก API Route; มติกำหนดให้ใช้ `Authorization: Bearer <Firebase ID Token>` + `verifyIdToken()` ฝั่ง server ต่อทุก protected API route, ห้ามเก็บ token เองใน localStorage, ยังไม่ใช้ custom session cookie ใน V1 — เป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
+| Phase 5 Coupon Decisions | เพิ่มหัวข้อ 14: (1) "Coupon Usage Limit & Redemption Atomicity" — เอกสารก่อนหน้านี้ระบุ "Usage Limit" เป็นคำแยกจาก "Total Limit"/"Per Member Limit" ในรายการ Conditions โดยไม่นิยามความต่างไว้ และ `couponInstances.status` schema (§5) เป็น one-way `AVAILABLE→USED` อยู่แล้วโดยไม่มี counter field ใดๆ รองรับ multi-use; มติล็อกว่า V1 = 1 instance redeem ได้ 1 ครั้งเท่านั้น ("Usage Limit" = ขอบเขตนี้ ไม่ใช่แนวคิดแยก), redemption ต้อง atomic transaction + idempotent เสมอ, ห้าม implement multi-use เองโดยไม่ขออนุมัติใหม่ — เหตุผล: ตรงกับ schema/Redemption Flow ที่มีอยู่แล้ว, ลดพื้นผิว race-condition ที่ไม่มี spec รองรับ (2) "Coupon Expiration — Lazy Validation for V1" — ตาราง Scheduled ของหัวข้อ 32 ระบุ `couponExpiration` ไว้โดยไม่บอก phase ที่สร้างจริง; มติล็อกว่า Phase 5 ใช้ lazy validation ที่ redeem/use time เท่านั้น (เทียบ `expiresAt` กับ `serverNow` ใน transaction เดียวกับการเขียน, UI derive สถานะได้แต่ไม่ใช่ security boundary), เลื่อน scheduled sweep ไป phase ที่มี scheduled-infrastructure เป็นงานปกติอยู่แล้ว — เหตุผล: หลีกเลี่ยง premature infrastructure complexity ตามหัวข้อ 0, สอดคล้องกับ pattern เดียวกับ Reward's Voucher Expiration ใน Phase 4 — ทั้งสองมติเป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด ไม่ลบ `couponExpiration` ออกจากตารางหัวข้อ 32 | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 
 ---
 

@@ -8,6 +8,7 @@ import type {
   BrandingConfig,
   BranchRecord,
   MerchantRecord,
+  PointsExpirationPolicy,
   SegmentRulesConfig,
   StaffLimits,
 } from "@/modules/merchant/types";
@@ -21,13 +22,21 @@ import type { AuthContext } from "@/modules/shared/types";
  * 2's API routes will call, plus what Phase 1's own tests need to set up fixtures.
  */
 
+// `managerApprovalThreshold` must stay below `manualAdjustmentLimit` for the two-tier check in
+// `assertWithinStaffLimits` (src/modules/points/ledger-service.ts, §9) to mean anything for the
+// STAFF role: manualAdjustmentLimit is the hard ceiling nobody (Staff included) may exceed via
+// manual add, while managerApprovalThreshold is the lower bar above which a Staff-role manual add
+// is rejected outright (ask a Manager/Owner to do it instead) — reversed, the lower limit would
+// always throw first and the approval-threshold check would be unreachable dead config.
 const DEFAULT_STAFF_LIMITS: StaffLimits = {
   maxPointsPerTransaction: 1000,
   maxPointsPerHour: 5000,
   maxPointsPerDay: 20000,
-  manualAdjustmentLimit: 500,
-  managerApprovalThreshold: 2000,
+  manualAdjustmentLimit: 2000,
+  managerApprovalThreshold: 500,
 };
+
+const DEFAULT_POINTS_EXPIRATION_POLICY: PointsExpirationPolicy = { type: "NEVER" };
 
 const DEFAULT_SEGMENT_RULES: SegmentRulesConfig = {
   inactiveAfterDays: 60,
@@ -105,6 +114,7 @@ export async function createMerchantWithOwner(
       timezone: input.timezone,
       staffLimits: { ...DEFAULT_STAFF_LIMITS, ...input.staffLimits },
       segmentRulesConfig: { ...DEFAULT_SEGMENT_RULES, ...input.segmentRulesConfig },
+      pointsExpirationPolicy: DEFAULT_POINTS_EXPIRATION_POLICY,
       ownerUserId: input.ownerAuthUid,
       createdAt: FieldValue.serverTimestamp(),
     });

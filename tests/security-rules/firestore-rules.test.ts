@@ -252,7 +252,49 @@ describe("firestore.rules — undeclared collections default-deny", () => {
     const staff = testEnv
       .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
       .firestore();
-    await assertFails(getDoc(doc(staff, "pointsLedger", "does-not-exist-yet")));
+    // `pointsLedger` is EXPLICITLY declared (deny-all) below — genuinely undeclared collection
+    // name needed here so this test still verifies Firestore's own "no matching rule = no access"
+    // default, not the explicit block.
+    await assertFails(getDoc(doc(staff, "notAPhase3CollectionEither", "does-not-exist")));
+  });
+});
+
+describe("firestore.rules — Phase 3 points collections: 100% deny-all client read/write (§12, §26)", () => {
+  // pointRules/pointsLedger/pointsLots/pointsLotConsumptions/idempotencyKeys/visits/events: every
+  // read and every write goes through the protected API routes (Admin SDK) — the Staff Portal
+  // never reads these directly via the client Firestore SDK (see firestore.rules comment).
+  const PHASE_3_COLLECTIONS = [
+    "pointRules",
+    "pointsLedger",
+    "pointsLots",
+    "pointsLotConsumptions",
+    "idempotencyKeys",
+    "visits",
+    "events",
+  ] as const;
+
+  it.each(PHASE_3_COLLECTIONS)("%s denies read to same-merchant staff and superAdmin alike", async (name) => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const docId = `x-${randomUUID()}`;
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), name, docId), { merchantId });
+    });
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(getDoc(doc(staff, name, docId)));
+    await assertFails(getDoc(doc(admin, name, docId)));
+  });
+
+  it.each(PHASE_3_COLLECTIONS)("%s denies create/update/delete from any client, including superAdmin", async (name) => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(setDoc(doc(staff, name, `x-${randomUUID()}`), { merchantId }));
+    await assertFails(setDoc(doc(admin, name, `x-${randomUUID()}`), { merchantId }));
   });
 });
 

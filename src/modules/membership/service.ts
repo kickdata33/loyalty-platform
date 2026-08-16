@@ -116,3 +116,77 @@ export async function listMemberships(ctx: AuthContext): Promise<MembershipRecor
     .get();
   return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<MembershipRecord, "id">) }));
 }
+
+/** `memberCode` is generated uppercase (see `generateMemberCode`) — normalizing lookup input the
+ * same way lets Staff Scan/Search work regardless of how the code was typed/encoded. */
+function normalizeMemberCode(code: string): string {
+  return code.trim().toUpperCase();
+}
+
+const PREFIX_QUERY_LIMIT = 20;
+
+/** `merchantId` equality is ALWAYS the first filter, combined with the field's startAt/endAt
+ * range -- this needs a composite index (merchantId asc, <field> asc), see
+ * firestore.indexes.json -- and, critically, means the result limit applies *within this
+ * merchant's own data*, not globally across every merchant that happens to share a prefix. */
+function tenantScopedPrefixQuery(merchantId: string, field: string, prefix: string) {
+  return getDb()
+    .collection(COLLECTIONS.memberships)
+    .where("merchantId", "==", merchantId)
+    .orderBy(field)
+    .startAt(prefix)
+    .endAt(`${prefix}`)
+    .limit(PREFIX_QUERY_LIMIT);
+}
+
+/**
+ * Staff Search (§33 Phase 3, §35 item 2 — Firestore prefix-query, the architecture's own
+ * recommended V1 default; "พอสำหรับ 500-10,000 members/ร้าน"). Searches `displayName`, `phone`,
+ * and `memberCode` prefixes, always filtered to the caller's own merchant, and merges/dedupes the
+ * three result sets. Never touches `platformCustomers`/`customerIdentities` (§7).
+ */
+export async function searchMemberships(ctx: AuthContext, query: string): Promise<MembershipRecord[]> {
+  requirePermission(ctx, PERMISSIONS.MEMBER_SEARCH, ctx.merchantId);
+  const trimmed = query.trim();
+  if (trimmed.length === 0) return [];
+
+  const [byName, byPhone, byCode] = await Promise.all([
+    tenantScopedPrefixQuery(ctx.merchantId, "merchantProfile.displayName", trimmed).get(),
+    tenantScopedPrefixQuery(ctx.merchantId, "merchantProfile.phone", trimmed).get(),
+    tenantScopedPrefixQuery(ctx.merchantId, "memberCode", normalizeMemberCode(trimmed)).get(),
+  ]);
+
+  const byId = new Map<string, MembershipRecord>();
+  for (const snap of [byName, byPhone, byCode]) {
+    for (const doc of snap.docs) {
+      const data = doc.data() as Omit<MembershipRecord, "id">;
+      byId.set(doc.id, { id: doc.id, ...data }); // merchantId already guaranteed by the query itself
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Staff Scan flow: exact lookup by `memberCode` (what a member's QR encodes — see
+ * `src/modules/points/qr.ts`). Loads then authorizes against the *actual* merchantId (§10), same
+ * pattern as `getMembership` — a forged/foreign code correctly yields `NotFoundError`/
+ * `TenantIsolationError`, never another merchant's member data.
+ */
+export async function getMembershipByCode(
+  ctx: AuthContext,
+  memberCode: string,
+): Promise<MembershipRecord> {
+  requirePermission(ctx, PERMISSIONS.MEMBER_SEARCH, ctx.merchantId);
+  const snap = await getDb()
+    .collection(COLLECTIONS.memberships)
+    .where("memberCode", "==", normalizeMemberCode(memberCode))
+    .limit(1)
+    .get();
+  if (snap.empty) throw new NotFoundError(`No member found for code ${memberCode}.`);
+  const doc = snap.docs[0];
+  const data = doc.data() as Omit<MembershipRecord, "id">;
+  if (data.merchantId !== ctx.merchantId) {
+    throw new NotFoundError(`No member found for code ${memberCode}.`); // don't leak cross-tenant existence
+  }
+  return { id: doc.id, ...data };
+}

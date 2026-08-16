@@ -59,6 +59,8 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <header className="flex items-center justify-between border-b px-6 py-3">
         <nav className="flex gap-4 text-sm">
           <Link href="/dashboard">หน้าหลัก</Link>
+          <Link href="/dashboard/members">สมาชิก</Link>
+          <Link href="/dashboard/points-rules">กติกาแต้ม</Link>
           <Link href="/dashboard/staff">พนักงาน</Link>
           <Link href="/dashboard/settings">ตั้งค่าร้าน</Link>
         </nav>

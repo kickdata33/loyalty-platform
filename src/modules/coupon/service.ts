@@ -289,7 +289,12 @@ function assertCouponIsIssuable(template: CouponTemplate, now: Date): void {
   if (endAt && endAt.toDate() < now) throw new ValidationError("This coupon is no longer available.");
 }
 
-interface IssueCouponInstanceParams {
+/** Exported (Phase 6) — the promotion-automation executor's ISSUE_COUPON action calls this
+ * directly (not `issueCouponManual`, which hard-codes `issuedVia:'MANUAL'`) so an automation-
+ * driven issuance is correctly traceable via one of the already-modeled non-MANUAL `issuedVia`
+ * values (e.g. `'PROMOTION'`/`'CAMPAIGN'`), and correctly sets `countsAsVisit:false` (§15 — a
+ * system-triggered issuance is not a staff-initiated counter interaction, same as Segment). */
+export interface IssueCouponInstanceParams {
   membershipId: string;
   couponTemplateId: string;
   branchId: string | null;
@@ -307,7 +312,7 @@ interface IssueCouponInstanceParams {
  * distribution channel. All reads (idempotency check, membership, template, Total/Per-Member
  * Limit counts) happen before any write, per Firestore's transaction rules — the exact ordering
  * bug class found and fixed in Phase 3/4's Final Reviews. */
-async function issueCouponInstance(
+export async function issueCouponInstance(
   ctx: AuthContext,
   params: IssueCouponInstanceParams,
 ): Promise<{ instanceId: string; code: string; isReplay: boolean }> {

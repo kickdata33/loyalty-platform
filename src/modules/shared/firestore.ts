@@ -45,6 +45,9 @@ export const COLLECTIONS = {
   // Phase 5 — Coupons (§5, §14)
   couponTemplates: "couponTemplates",
   couponInstances: "couponInstances",
+  // Phase 6 — Promotion/Automation (§5, §16, §17)
+  automations: "automations",
+  automationActionExecutions: "automationActionExecutions",
 } as const;
 
 /** Sub-collection path helper: `merchants/{merchantId}/branches`. */

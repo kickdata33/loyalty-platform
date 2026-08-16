@@ -146,6 +146,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Phase 6 — Promotion/Automation (§5, §16, §17). Same "server is the only path" reasoning —
+    // CRUD, execution, and safety-limit checks all go through the protected API routes / Cloud
+    // Functions (Admin SDK), never a direct client write.
+    match /automations/{automationId} {
+      allow read, write: if false;
+    }
+    match /automationActionExecutions/{executionKey} {
+      allow read, write: if false;
+    }
+
     // Everything else stays denied by Firestore's own default (no matching rule = no access) —
     // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
     // collections that actually exist; add a new explicit match block, not a broad wildcard, when

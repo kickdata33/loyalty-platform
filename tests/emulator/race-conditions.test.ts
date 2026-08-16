@@ -4,6 +4,13 @@ import { createMembership } from "@/modules/membership/service";
 import { createMerchantWithOwner } from "@/modules/merchant/service";
 import { createCouponTemplate, issueCouponManual, redeemCoupon } from "@/modules/coupon/service";
 import { addManualPoints, adjustPoints } from "@/modules/points/ledger-service";
+import {
+  createAutomation,
+  dryRunAutomation,
+  executeAutomationAction,
+  getAutomation,
+  setAutomationStatus,
+} from "@/modules/promotion-automation/service";
 import { confirmVoucherUse, createRewardTemplate, redeemReward } from "@/modules/reward/service";
 import { ConflictError, ValidationError } from "@/modules/shared/errors";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
@@ -313,6 +320,43 @@ describe("Reward Redeem/Use — concurrency safety (emulator)", () => {
     expect(fulfilled.length).toBe(1);
     const rejected = results.filter((r) => r.status === "rejected");
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+  });
+});
+
+/**
+ * Automation execution concurrency safety (§16, §17, §26). `executeAutomationAction`'s
+ * ADD_POINTS/ADD_TAG path is fully self-composed in one transaction (idempotency check + write),
+ * so two concurrent calls with the SAME `executionKey` race on that transaction exactly like
+ * every other idempotency-guarded write in this codebase.
+ */
+describe("Automation execution — concurrency safety (emulator)", () => {
+  it("two concurrent executions of the SAME action/event/member/automation never double-credit points", async () => {
+    const { ownerCtx } = await createMerchantFixture();
+    const automationId = await createAutomation(ownerCtx, {
+      name: "Race automation",
+      trigger: { type: "MEMBER_CREATED", config: {} },
+      conditions: [],
+      actions: [{ type: "ADD_POINTS", params: { amount: 20 } }],
+      limits: { maxExecPerCustomerPerDay: null, maxExecPerPromotion: null, pointBudget: null, couponBudget: null, cooldownHours: null },
+      presentedAs: "AUTOMATION",
+    });
+    await dryRunAutomation(ownerCtx, automationId);
+    await setAutomationStatus(ownerCtx, automationId, "ACTIVE");
+    const automation = await getAutomation(ownerCtx, automationId);
+    const membershipId = await createMembership(ownerCtx, { displayName: "Race Automation Member" });
+    const eventId = uniqueId("race-evt");
+
+    const results = await Promise.allSettled([
+      executeAutomationAction({ automation, actionIndex: 0, membershipId, eventId }),
+      executeAutomationAction({ automation, actionIndex: 0, membershipId, eventId }),
+    ]);
+
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    const statuses = results.map((r) => (r as PromiseFulfilledResult<{ status: string }>).value.status);
+    expect(statuses.filter((s) => s === "EXECUTED")).toHaveLength(1); // the other sees ALREADY_PROCESSED
+
+    const snap = await getDb().collection(COLLECTIONS.memberships).doc(membershipId).get();
+    expect((snap.data() as { pointsBalance: number }).pointsBalance).toBe(20); // never 40
   });
 });
 

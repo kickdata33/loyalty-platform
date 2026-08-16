@@ -1,6 +1,7 @@
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
+import { writeEvent } from "@/modules/event/service";
 import { createPlatformCustomer } from "@/modules/identity/service";
 import { requireBranchScope, requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
@@ -53,30 +54,41 @@ export async function createMembership(
 
   const db = getDb();
   const ref = db.collection(COLLECTIONS.memberships).doc();
-  await ref.set({
-    platformCustomerId,
-    merchantId: ctx.merchantId,
-    branchId: input.branchId ?? null,
-    memberCode: generateMemberCode(ref.id),
-    joinedAt: FieldValue.serverTimestamp(),
-    merchantProfile: {
-      displayName: input.displayName,
-      phone: input.phone ?? null,
-      email: input.email ?? null,
-      consentMarketing: false,
-      profileSource: "STAFF_INPUT",
-    },
-    merchantLineIdentity: null,
-    pointsBalance: 0,
-    pointsBalanceUpdatedAt: FieldValue.serverTimestamp(),
-    tags: [],
-    activityStats: {
-      lastVisitAt: null,
-      visitCount30d: 0,
-      visitCount90d: 0,
-      firstVisitAt: null,
-      segment: "NEW",
-    },
+  // Wrapped in a (zero-read) transaction so `membership.created` — needed by Phase 6's
+  // MEMBER_CREATED trigger / "Welcome" preset — is written atomically with the membership doc
+  // itself (§17: "เขียนใน transaction เดียวกัน"), not as a separate best-effort call.
+  await db.runTransaction(async (tx) => {
+    tx.create(ref, {
+      platformCustomerId,
+      merchantId: ctx.merchantId,
+      branchId: input.branchId ?? null,
+      memberCode: generateMemberCode(ref.id),
+      joinedAt: FieldValue.serverTimestamp(),
+      merchantProfile: {
+        displayName: input.displayName,
+        phone: input.phone ?? null,
+        email: input.email ?? null,
+        consentMarketing: false,
+        profileSource: "STAFF_INPUT",
+      },
+      merchantLineIdentity: null,
+      pointsBalance: 0,
+      pointsBalanceUpdatedAt: FieldValue.serverTimestamp(),
+      tags: [],
+      activityStats: {
+        lastVisitAt: null,
+        visitCount30d: 0,
+        visitCount90d: 0,
+        firstVisitAt: null,
+        segment: "NEW",
+      },
+    });
+    writeEvent(tx, {
+      merchantId: ctx.merchantId,
+      type: "membership.created",
+      membershipId: ref.id,
+      payload: { profileSource: "STAFF_INPUT" },
+    });
   });
 
   await writeAuditLog({

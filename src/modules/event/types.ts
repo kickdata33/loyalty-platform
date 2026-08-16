@@ -18,7 +18,10 @@ export type DomainEventType =
   | "reward.redeemed"
   | "reward.used"
   | "coupon.issued"
-  | "coupon.redeemed";
+  | "coupon.redeemed"
+  | "membership.created"
+  | "automation.executed"
+  | "promotion.triggered";
 
 export interface DomainEvent {
   id: string;

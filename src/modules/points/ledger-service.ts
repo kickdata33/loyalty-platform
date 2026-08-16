@@ -49,7 +49,12 @@ const db = () => getDb();
 
 // --- shared helpers ---------------------------------------------------------------------
 
-function computeExpiresAt(policy: PointsExpirationPolicy, earnedAt: Date): Timestamp | null {
+/** Exported (Phase 6) — the promotion-automation executor's ADD_POINTS action composes this
+ * directly with `createLot`/`writeLedgerEntry` rather than going through `addManualPoints`,
+ * because `addManualPoints` enforces §9 Staff Limits (a human-error/fraud control specific to
+ * counter staff) which must NOT apply to system-triggered automation — automation has its own
+ * governance (`automations.limits`, checked by the executor before dispatch, §16). */
+export function computeExpiresAt(policy: PointsExpirationPolicy, earnedAt: Date): Timestamp | null {
   switch (policy.type) {
     case "NEVER":
       return null;
@@ -137,7 +142,9 @@ async function assertWithinStaffLimits(
 }
 
 /** Creates a new EARN-type lot (used for EARN, positive ADJUSTMENT, and REVERSAL-of-SPEND). */
-function createLot(
+/** Exported (Phase 6) — see `computeExpiresAt` above for why the automation executor composes
+ * this directly instead of calling `addManualPoints`. */
+export function createLot(
   tx: Transaction,
   merchantId: string,
   membershipId: string,
@@ -321,7 +328,9 @@ export function recordVisit(
     merchantId: string;
     membershipId: string;
     branchId: string | null;
-    source: "STAFF_SCAN" | "STAFF_SEARCH" | "MANUAL_ENTRY";
+    // 'AUTOMATION' added Phase 6 — completes §15's documented `source` enum (`visits.source:
+    // 'STAFF_SCAN'|'STAFF_SEARCH'|'MANUAL_ENTRY'|'AUTOMATION'`), which had no producer until now.
+    source: "STAFF_SCAN" | "STAFF_SEARCH" | "MANUAL_ENTRY" | "AUTOMATION";
     countsAsVisit: boolean;
     relatedRefs: VisitRelatedRefs;
     createdBy: string;

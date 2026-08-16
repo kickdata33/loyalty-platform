@@ -105,7 +105,9 @@ describe("Points Ledger — earnPointsByRule (§11 stacking + §12 EARN flow)", 
 
     const events = await eventsFor(membershipId);
     const types = events.map((e) => e.type).sort();
-    expect(types).toEqual(["points.earned", "visit.recorded"]);
+    // `membership.created` (Phase 6) is now also emitted by `createMembership` itself, which
+    // `setupWithVisitRule` calls to set up this fixture — included here, not a regression.
+    expect(types).toEqual(["membership.created", "points.earned", "visit.recorded"]);
     expect(events.every((e) => e.merchantId && e.schemaVersion === 1)).toBe(true);
   });
 

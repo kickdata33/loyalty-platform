@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createMembership } from "@/modules/membership/service";
 import { createMerchantWithOwner } from "@/modules/merchant/service";
+import { createCouponTemplate, issueCouponManual, redeemCoupon } from "@/modules/coupon/service";
 import { addManualPoints, adjustPoints } from "@/modules/points/ledger-service";
 import { confirmVoucherUse, createRewardTemplate, redeemReward } from "@/modules/reward/service";
 import { ConflictError, ValidationError } from "@/modules/shared/errors";
@@ -306,6 +307,74 @@ describe("Reward Redeem/Use — concurrency safety (emulator)", () => {
         visitSource: "STAFF_SEARCH",
         idempotencyKey: uniqueId("race-use"),
       }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+  });
+});
+
+/**
+ * Coupon Issue/Redeem concurrency safety (§9, §12, §14, §26). `issueCouponInstance` contends on
+ * the same `couponTemplates` doc + the same Total-Limit/Per-Member-Limit `couponInstances`
+ * queries; `redeemCoupon` contends on the same `couponInstances` doc found by `code` — same
+ * transaction-retry reasoning as the Points Ledger and Reward suites above.
+ */
+describe("Coupon Issue/Redeem — concurrency safety (emulator)", () => {
+  it("two concurrent manual issuances racing against totalLimit=1 never both succeed (no oversell)", async () => {
+    const { ownerCtx } = await createMerchantFixture();
+    const couponId = await createCouponTemplate(ownerCtx, {
+      name: "Last one",
+      type: "FIXED_DISCOUNT",
+      totalLimit: 1,
+    });
+    const membershipA = await createMembership(ownerCtx, { displayName: "Race Issue A" });
+    const membershipB = await createMembership(ownerCtx, { displayName: "Race Issue B" });
+
+    const results = await Promise.allSettled([
+      issueCouponManual(ownerCtx, {
+        membershipId: membershipA,
+        couponTemplateId: couponId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey: uniqueId("race-issue"),
+      }),
+      issueCouponManual(ownerCtx, {
+        membershipId: membershipB,
+        couponTemplateId: couponId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey: uniqueId("race-issue"),
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1);
+
+    const instancesSnap = await getDb()
+      .collection(COLLECTIONS.couponInstances)
+      .where("merchantId", "==", ownerCtx.merchantId)
+      .get();
+    expect(instancesSnap.docs).toHaveLength(1); // never 2, totalLimit honored under contention
+  });
+
+  it("two concurrent redemptions of the SAME code never both succeed (only one winner, the other gets ConflictError)", async () => {
+    const { ownerCtx } = await createMerchantFixture();
+    const couponId = await createCouponTemplate(ownerCtx, { name: "Race redeem", type: "FIXED_DISCOUNT" });
+    const membershipId = await createMembership(ownerCtx, { displayName: "Race Redeem" });
+    const { code } = await issueCouponManual(ownerCtx, {
+      membershipId,
+      couponTemplateId: couponId,
+      branchId: null,
+      visitSource: "STAFF_SEARCH",
+      idempotencyKey: uniqueId("issue"),
+    });
+
+    const results = await Promise.allSettled([
+      redeemCoupon(ownerCtx, { code, branchId: null, visitSource: "STAFF_SEARCH", idempotencyKey: uniqueId("race-redeem") }),
+      redeemCoupon(ownerCtx, { code, branchId: null, visitSource: "STAFF_SEARCH", idempotencyKey: uniqueId("race-redeem") }),
     ]);
 
     const fulfilled = results.filter((r) => r.status === "fulfilled");

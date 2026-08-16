@@ -20,7 +20,7 @@ export function getDb(): Firestore {
 /**
  * Canonical Firestore collection names (FINAL-ARCHITECTURE.md §5). Centralized here so a typo in
  * a collection name is a compile error (via `COLLECTIONS.foo`) instead of a silent runtime bug.
- * Extended as each phase adds collections — currently covers Phase 1–4.
+ * Extended as each phase adds collections — currently covers Phase 1–5.
  */
 export const COLLECTIONS = {
   platformCustomers: "platformCustomers",
@@ -42,6 +42,9 @@ export const COLLECTIONS = {
   // Phase 4 — Rewards (§5, §13)
   rewardTemplates: "rewardTemplates",
   voucherInstances: "voucherInstances",
+  // Phase 5 — Coupons (§5, §14)
+  couponTemplates: "couponTemplates",
+  couponInstances: "couponInstances",
 } as const;
 
 /** Sub-collection path helper: `merchants/{merchantId}/branches`. */

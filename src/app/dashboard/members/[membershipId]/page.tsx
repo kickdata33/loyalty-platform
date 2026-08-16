@@ -38,6 +38,21 @@ interface VoucherRow {
   usedAt: unknown;
 }
 
+interface CouponTemplateRow {
+  id: string;
+  name: string;
+  enabled: boolean;
+}
+
+interface CouponInstanceRow {
+  id: string;
+  couponTemplateId: string;
+  code: string;
+  status: "AVAILABLE" | "USED" | "EXPIRED";
+  issuedAt: unknown;
+  usedAt: unknown;
+}
+
 export default function MemberDetailPage() {
   const params = useParams<{ membershipId: string }>();
   const membershipId = params.membershipId;
@@ -49,6 +64,10 @@ export default function MemberDetailPage() {
   const [rewards, setRewards] = useState<RewardRow[] | null>(null);
   const [vouchers, setVouchers] = useState<VoucherRow[] | null>(null);
   const [selectedRewardId, setSelectedRewardId] = useState("");
+  const [coupons, setCoupons] = useState<CouponTemplateRow[] | null>(null);
+  const [couponInstances, setCouponInstances] = useState<CouponInstanceRow[] | null>(null);
+  const [selectedCouponId, setSelectedCouponId] = useState("");
+  const [redeemCode, setRedeemCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -65,6 +84,12 @@ export default function MemberDetailPage() {
     apiFetchJson<VoucherRow[]>(`/api/rewards/history?membershipId=${membershipId}`)
       .then(setVouchers)
       .catch(() => setError("โหลดประวัติรางวัลไม่สำเร็จ"));
+    apiFetchJson<CouponTemplateRow[]>("/api/coupons")
+      .then((all) => setCoupons(all.filter((c) => c.enabled)))
+      .catch(() => setError("โหลดรายการคูปองไม่สำเร็จ"));
+    apiFetchJson<CouponInstanceRow[]>(`/api/coupons/history?membershipId=${membershipId}`)
+      .then(setCouponInstances)
+      .catch(() => setError("โหลดประวัติคูปองไม่สำเร็จ"));
   }, [membershipId]);
 
   useEffect(load, [load]);
@@ -179,6 +204,42 @@ export default function MemberDetailPage() {
     );
   }
 
+  async function handleIssueCoupon(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedCouponId) return;
+    await withNotice(
+      () =>
+        apiFetchJson("/api/coupons/issue", {
+          method: "POST",
+          body: {
+            membershipId,
+            couponTemplateId: selectedCouponId,
+            visitSource: "STAFF_SEARCH",
+            idempotencyKey: crypto.randomUUID(),
+          },
+        }),
+      "แจกคูปองให้สมาชิกเรียบร้อย",
+    );
+  }
+
+  async function handleRedeemCoupon(event: FormEvent) {
+    event.preventDefault();
+    if (!redeemCode.trim()) return;
+    await withNotice(
+      () =>
+        apiFetchJson("/api/coupons/redeem", {
+          method: "POST",
+          body: {
+            code: redeemCode.trim(),
+            visitSource: "STAFF_SEARCH",
+            idempotencyKey: crypto.randomUUID(),
+          },
+        }),
+      "ใช้คูปองเรียบร้อย",
+    );
+    setRedeemCode("");
+  }
+
   if (!member) return <StatusMessage title="กำลังโหลด…" />;
 
   return (
@@ -251,6 +312,42 @@ export default function MemberDetailPage() {
             </button>
           </form>
         ) : null}
+
+        {canAdjust && coupons && coupons.length > 0 ? (
+          <form onSubmit={handleIssueCoupon} className="flex flex-col gap-2 rounded border p-4">
+            <h2 className="text-sm font-medium">แจกคูปอง (Owner/Manager)</h2>
+            <select
+              required
+              value={selectedCouponId}
+              onChange={(e) => setSelectedCouponId(e.target.value)}
+              className="rounded border px-3 py-2 text-sm"
+            >
+              <option value="">เลือกคูปอง…</option>
+              {coupons.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <button type="submit" className="w-fit rounded border px-4 py-2 text-sm">
+              แจกคูปอง
+            </button>
+          </form>
+        ) : null}
+
+        <form onSubmit={handleRedeemCoupon} className="flex flex-col gap-2 rounded border p-4">
+          <h2 className="text-sm font-medium">ใช้คูปอง (กรอกโค้ด หรือ สแกน QR)</h2>
+          <input
+            required
+            placeholder="รหัสคูปอง"
+            value={redeemCode}
+            onChange={(e) => setRedeemCode(e.target.value)}
+            className="rounded border px-3 py-2 text-sm"
+          />
+          <button type="submit" className="w-fit rounded border px-4 py-2 text-sm">
+            ใช้คูปอง
+          </button>
+        </form>
       </div>
 
       <div>
@@ -323,6 +420,34 @@ export default function MemberDetailPage() {
                         ยืนยันการใช้สิทธิ์
                       </button>
                     ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-medium">ประวัติคูปอง</h2>
+        {couponInstances === null ? (
+          <StatusMessage title="กำลังโหลด…" />
+        ) : couponInstances.length === 0 ? (
+          <p className="text-sm text-slate-600">ยังไม่มีคูปอง</p>
+        ) : (
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="py-2">รหัสคูปอง</th>
+                <th className="py-2">สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {couponInstances.map((c) => (
+                <tr key={c.id} className="border-b">
+                  <td className="py-2 font-mono">{c.code}</td>
+                  <td className="py-2">
+                    {c.status === "AVAILABLE" ? "พร้อมใช้งาน" : c.status === "USED" ? "ใช้แล้ว" : "หมดอายุ"}
                   </td>
                 </tr>
               ))}

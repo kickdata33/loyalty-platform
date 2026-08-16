@@ -136,6 +136,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Phase 5 — Coupons (§5, §14, §26). Same "server is the only path" reasoning as Reward —
+    // Issue/Redeem are transactional operations (Total/Per-Member Limit checks, status
+    // transition) that must go through the protected API routes, never a direct client write.
+    match /couponTemplates/{couponId} {
+      allow read, write: if false;
+    }
+    match /couponInstances/{instanceId} {
+      allow read, write: if false;
+    }
+
     // Everything else stays denied by Firestore's own default (no matching rule = no access) —
     // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
     // collections that actually exist; add a new explicit match block, not a broad wildcard, when

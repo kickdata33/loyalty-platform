@@ -265,6 +265,10 @@ export interface PublicMerchantProfile {
   name: string;
   slug: string;
   branding: BrandingConfig;
+  /** Phase 7 (§22) — the merchant's LIFF App ID, needed client-side to initialize
+   * `LiffClientProvider`. Not a secret (LIFF IDs are meant to be embedded in a public URL/page by
+   * design) — `null` until the merchant has connected LINE (§19/§20). */
+  liffId: string | null;
 }
 
 export async function getPublicMerchantProfileBySlug(
@@ -279,5 +283,7 @@ export async function getPublicMerchantProfileBySlug(
 
   const doc = snap.docs[0];
   const data = doc.data() as MerchantRecord;
-  return { merchantId: doc.id, name: data.name, slug: data.slug, branding: data.branding };
+  const lineConfigSnap = await getDb().collection(COLLECTIONS.lineChannelConfigs).doc(doc.id).get();
+  const liffId = lineConfigSnap.exists ? (lineConfigSnap.data() as { loginChannel: { liffId: string | null } }).loginChannel.liffId : null;
+  return { merchantId: doc.id, name: data.name, slug: data.slug, branding: data.branding, liffId };
 }

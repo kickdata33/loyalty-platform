@@ -49,11 +49,18 @@ describe("LineClientProvider boundary (FINAL-ARCHITECTURE.md §22)", () => {
     assertNoDirectLiffUsage(path.resolve(import.meta.dirname, "../../src/components/customer-portal"));
   });
 
-  it("no @line/liff dependency exists yet — LiffClientProvider is Phase 7, not Phase 2", () => {
+  it("@line/liff is a real Phase 7 dependency now, imported from exactly ONE file in the whole codebase", () => {
     const pkg = JSON.parse(
       readFileSync(path.resolve(import.meta.dirname, "../../package.json"), "utf8"),
-    ) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
-    expect(pkg.dependencies?.["@line/liff"]).toBeUndefined();
-    expect(pkg.devDependencies?.["@line/liff"]).toBeUndefined();
+    ) as { dependencies?: Record<string, string> };
+    expect(pkg.dependencies?.["@line/liff"]).toBeDefined();
+
+    // Stronger than the Phase 2 version of this test (which only checked the dependency didn't
+    // exist yet): now that it legitimately does, positively enforce §22's boundary — the SDK must
+    // never leak into any file outside the one designated adapter.
+    const allowedFile = path.resolve(import.meta.dirname, "../../src/modules/line-client/liff-client-provider.ts");
+    const files = collectSourceFiles(path.resolve(import.meta.dirname, "../../src"));
+    const importers = files.filter((f) => f !== allowedFile && LIFF_IMPORT_PATTERN.test(stripComments(readFileSync(f, "utf8"))));
+    expect(importers).toEqual([]);
   });
 });

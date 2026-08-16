@@ -24,11 +24,9 @@ import type {
   AutomationTrigger,
   AutomationTriggerType,
 } from "@/modules/promotion-automation/types";
-import {
-  DEFERRED_ACTION_TYPES,
-  DEFERRED_TRIGGER_TYPES,
-  NOTIFICATION_SEAM_ACTION_TYPES,
-} from "@/modules/promotion-automation/types";
+import { DEFERRED_ACTION_TYPES, DEFERRED_TRIGGER_TYPES } from "@/modules/promotion-automation/types";
+import { sendNotification } from "@/modules/notification/service";
+import type { NotificationTemplateType } from "@/modules/notification/types";
 
 /**
  * Promotion/Automation Engine (FINAL-ARCHITECTURE.md §16, §17) — Phase 6.
@@ -519,19 +517,59 @@ export async function executeAutomationAction(params: {
     });
   }
 
-  if (NOTIFICATION_SEAM_ACTION_TYPES.includes(action.type)) {
+  if (action.type === "NOTIFY_OWNER") {
+    // Locked Phase 7 decision ("NOTIFY_OWNER Delivery & Broadcast Test Send", §23): no Owner/Staff
+    // LINE identity model exists — this action stays on the Phase 6 FAILED-seam indefinitely, not
+    // just until Phase 7 ships. Never reinterpreted, never given a delivery path here.
     return db.runTransaction(async (tx) => {
       const existing = await tx.get(executionRef);
       if (existing.exists) return { status: "ALREADY_PROCESSED" as const };
-      // Phase 6 seam only — no ChannelAdapter exists before Phase 7 (§23, §33). Always recorded
-      // as FAILED with a clear reason so §17's existing dead-letter handling applies naturally,
-      // instead of inventing a new status value or pretending delivery happened.
       tx.create(
         executionRef,
-        baseExecutionDoc(automation, action, actionIndex, eventId, membershipId, "FAILED", null, "No notification channel configured — real delivery is Phase 7 scope."),
+        baseExecutionDoc(automation, action, actionIndex, eventId, membershipId, "FAILED", null, "No Owner/Staff LINE identity model exists — NOTIFY_OWNER delivery is explicitly deferred (§23)."),
       );
       return { status: "FAILED" as const };
     });
+  }
+
+  if (action.type === "SEND_NOTIFICATION") {
+    // Real delivery (Phase 7) — two-phase, same reasoning as ISSUE_COUPON/ISSUE_REWARD below:
+    // `sendNotification` performs real network I/O (calls the LINE Messaging API), which cannot
+    // run inside a Firestore transaction, so the executionKey gate and the delivery call are two
+    // steps, with `sendNotification`'s own retry+log write as the source of truth for what
+    // actually happened.
+    const gateResult = await db.runTransaction(async (tx) => {
+      const existing = await tx.get(executionRef);
+      if (existing.exists) return { proceed: false as const };
+      const counts = await readSafetyLimitCounts(tx, automation.merchantId, automation.id, membershipId);
+      const overLimit = isOverLimit(automation.limits, counts, action);
+      if (overLimit) {
+        tx.create(executionRef, baseExecutionDoc(automation, action, actionIndex, eventId, membershipId, "SKIPPED_LIMIT", null, overLimit));
+        return { proceed: false as const };
+      }
+      return { proceed: true as const };
+    });
+    if (!gateResult.proceed) {
+      const snap = await executionRef.get();
+      const status = (snap.data() as { status: "SKIPPED_LIMIT" } | undefined)?.status;
+      return { status: status === "SKIPPED_LIMIT" ? "SKIPPED_LIMIT" : "ALREADY_PROCESSED" };
+    }
+
+    const result = await sendNotification({
+      merchantId: automation.merchantId,
+      membershipId,
+      templateType: (action.params.templateType as NotificationTemplateType) ?? "PROMOTION",
+      variables: (action.params.variables as Record<string, string | number>) ?? {},
+    });
+    await db.runTransaction(async (tx) => {
+      const existing = await tx.get(executionRef);
+      if (existing.exists) return;
+      tx.create(
+        executionRef,
+        baseExecutionDoc(automation, action, actionIndex, eventId, membershipId, result.status === "sent" ? "EXECUTED" : "FAILED", null, result.error),
+      );
+    });
+    return { status: result.status === "sent" ? "EXECUTED" : "FAILED" };
   }
 
   // ISSUE_COUPON / ISSUE_REWARD — see the function doc comment for why these two are two-phase.

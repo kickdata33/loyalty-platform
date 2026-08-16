@@ -156,6 +156,20 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Phase 7 — LINE / Notifications (§5, §19, §23, §26). Credential-adjacent and message-
+    // delivery collections — server/Cloud-Function-only, same "server is the only path" reasoning
+    // as every prior phase's business-state collections. `lineChannelConfigs` in particular must
+    // never be client-readable even in part, since it holds Secret Manager references.
+    match /lineChannelConfigs/{merchantId} {
+      allow read, write: if false;
+    }
+    match /notificationSettings/{merchantId} {
+      allow read, write: if false;
+    }
+    match /notificationLog/{logId} {
+      allow read, write: if false;
+    }
+
     // Everything else stays denied by Firestore's own default (no matching rule = no access) —
     // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
     // collections that actually exist; add a new explicit match block, not a broad wildcard, when

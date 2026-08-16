@@ -16,6 +16,8 @@
     "emulators:functions": "npm --prefix functions run build && firebase emulators:start --only auth,firestore,functions"
   },
   "dependencies": {
+    "@google-cloud/secret-manager": "^7.0.0",
+    "@line/liff": "^2.29.2",
     "firebase": "^12.17.1",
     "firebase-admin": "^14.2.0",
     "jsqr": "^1.4.0",

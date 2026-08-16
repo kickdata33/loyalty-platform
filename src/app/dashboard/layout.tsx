@@ -64,6 +64,8 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           <Link href="/dashboard/rewards">รางวัลแลกแต้ม</Link>
           <Link href="/dashboard/coupons">คูปอง</Link>
           <Link href="/dashboard/automations">อัตโนมัติ/โปรโมชัน</Link>
+          <Link href="/dashboard/notifications">การแจ้งเตือน</Link>
+          <Link href="/dashboard/settings/line">ตั้งค่า LINE</Link>
           <Link href="/dashboard/staff">พนักงาน</Link>
           <Link href="/dashboard/settings">ตั้งค่าร้าน</Link>
         </nav>

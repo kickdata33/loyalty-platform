@@ -76,13 +76,13 @@ export type AutomationActionType =
 /** Action types Phase 6 must reject at automation create/update time (locked deferral). */
 export const DEFERRED_ACTION_TYPES: readonly AutomationActionType[] = ["CHANGE_TIER"];
 
-/** Action types Phase 6 accepts and idempotently records, but never actually delivers — no
- * `ChannelAdapter` exists before Phase 7 (§23, §33). Not a deferral in the same sense as
- * CHANGE_TIER/BIRTHDAY — configuring them is allowed, only real delivery is out of scope. */
-export const NOTIFICATION_SEAM_ACTION_TYPES: readonly AutomationActionType[] = [
-  "SEND_NOTIFICATION",
-  "NOTIFY_OWNER",
-];
+/** Historical: both action types were Phase 6's non-delivering seam (no `ChannelAdapter` existed
+ * before Phase 7, §23/§33). As of Phase 7, `SEND_NOTIFICATION` delivers for real via
+ * `NotificationService.send()`/`LineAdapter`; `NOTIFY_OWNER` remains permanently on this seam per
+ * the locked "NOTIFY_OWNER Delivery & Broadcast Test Send" decision (§23) — no Owner/Staff LINE
+ * identity model exists to deliver to. Kept as a named constant for that historical/documentation
+ * value even though only `NOTIFY_OWNER` still behaves this way. */
+export const NOTIFICATION_SEAM_ACTION_TYPES: readonly AutomationActionType[] = ["NOTIFY_OWNER"];
 
 export interface AutomationAction {
   type: AutomationActionType;

@@ -48,6 +48,10 @@ export const COLLECTIONS = {
   // Phase 6 — Promotion/Automation (§5, §16, §17)
   automations: "automations",
   automationActionExecutions: "automationActionExecutions",
+  // Phase 7 — LINE / Notifications (§5, §19, §23)
+  lineChannelConfigs: "lineChannelConfigs",
+  notificationSettings: "notificationSettings",
+  notificationLog: "notificationLog",
 } as const;
 
 /** Sub-collection path helper: `merchants/{merchantId}/branches`. */

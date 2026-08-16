@@ -231,3 +231,87 @@ export async function getMembershipByCode(
   }
   return { id: doc.id, ...data };
 }
+
+export interface ResolveLineMembershipInput {
+  merchantId: string;
+  platformCustomerId: string;
+  /** Verified `sub` from `verifyLineIdToken` ONLY — never a raw client-supplied value (§21). */
+  lineUserId: string;
+  channelId: string;
+  /** From `liff.getProfile()` — display-only, low-stakes (a nickname), unlike `lineUserId` never
+   * used for identity/security decisions. §21's "untrusted client input" concern is about identity
+   * (who this is), not cosmetic display text, matching how `STAFF_INPUT` members' `displayName` is
+   * already fully staff-typed and unverified. */
+  displayName: string;
+}
+
+/**
+ * Customer self-service registration/login (§20 "Customer-side" flow) — no `AuthContext`, no
+ * staff actor, deliberately NOT gated by `PERMISSIONS.MEMBER_CREATE` (a Staff/Owner-only
+ * permission that has no meaning here). `merchantId` must already be server-resolved (from a
+ * verified `merchantSlug` lookup) by the caller — this function trusts its `merchantId` parameter
+ * for that reason, unlike every staff-facing function in this file which derives it from
+ * `AuthContext` instead; it never accepts it from raw request body input directly.
+ *
+ * Idempotent: a customer opening the same merchant's portal again resolves the SAME Membership
+ * (queried by `platformCustomerId` — itself already resolved idempotently by
+ * `resolveOrCreatePlatformCustomer`, §6) rather than creating a duplicate.
+ */
+export async function resolveOrCreateLineMembership(input: ResolveLineMembershipInput): Promise<string> {
+  const db = getDb();
+  const existingSnap = await db
+    .collection(COLLECTIONS.memberships)
+    .where("merchantId", "==", input.merchantId)
+    .where("platformCustomerId", "==", input.platformCustomerId)
+    .limit(1)
+    .get();
+  if (!existingSnap.empty) {
+    const ref = existingSnap.docs[0].ref;
+    // Keep `merchantLineIdentity` current (re-login refreshes linkedAt) — never touches points/
+    // tags/activityStats, only the LINE-identity sub-object.
+    await ref.update({
+      merchantLineIdentity: {
+        channelId: input.channelId,
+        lineUserId: input.lineUserId,
+        linkedAt: FieldValue.serverTimestamp(),
+        friendshipStatus: "UNKNOWN",
+      },
+    });
+    return ref.id;
+  }
+
+  const ref = db.collection(COLLECTIONS.memberships).doc();
+  await db.runTransaction(async (tx) => {
+    tx.create(ref, {
+      platformCustomerId: input.platformCustomerId,
+      merchantId: input.merchantId,
+      branchId: null,
+      memberCode: generateMemberCode(ref.id),
+      joinedAt: FieldValue.serverTimestamp(),
+      merchantProfile: {
+        displayName: input.displayName,
+        phone: null,
+        email: null,
+        consentMarketing: false,
+        profileSource: "LINE_PROFILE_AUTOFILL",
+      },
+      merchantLineIdentity: {
+        channelId: input.channelId,
+        lineUserId: input.lineUserId,
+        linkedAt: FieldValue.serverTimestamp(),
+        friendshipStatus: "UNKNOWN",
+      },
+      pointsBalance: 0,
+      pointsBalanceUpdatedAt: FieldValue.serverTimestamp(),
+      tags: [],
+      activityStats: { lastVisitAt: null, visitCount30d: 0, visitCount90d: 0, firstVisitAt: null, segment: "NEW" },
+    });
+    writeEvent(tx, {
+      merchantId: input.merchantId,
+      type: "membership.created",
+      membershipId: ref.id,
+      payload: { profileSource: "LINE_PROFILE_AUTOFILL" },
+    });
+  });
+  return ref.id;
+}

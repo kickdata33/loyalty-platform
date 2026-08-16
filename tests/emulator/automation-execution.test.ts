@@ -160,12 +160,16 @@ describe("ADD_TAG action", () => {
   });
 });
 
-describe("SEND_NOTIFICATION / NOTIFY_OWNER — Phase 6 seam only, never real delivery (§23, §33)", () => {
+describe("NOTIFY_OWNER — permanently FAILED-seam, never real delivery (locked Phase 7 decision, §23)", () => {
+  // SEND_NOTIFICATION now delivers for real as of Phase 7 — see
+  // automation-notification-delivery.test.ts for its dedicated coverage (this file's Phase 6-era
+  // test previously covered both together under the old "always FAILED" seam; NOTIFY_OWNER alone
+  // keeps that exact shape indefinitely, per the locked decision).
   it("is idempotently recorded as FAILED with a clear reason, never as EXECUTED", async () => {
     const { ownerCtx } = await createMerchantFixture();
     const automation = await activate(ownerCtx, {
       ...addPointsAutomation,
-      actions: [{ type: "SEND_NOTIFICATION", params: {} }],
+      actions: [{ type: "NOTIFY_OWNER", params: {} }],
     });
     const membershipId = await createMembership(ownerCtx, { displayName: "Notify Me" });
 
@@ -180,7 +184,7 @@ describe("SEND_NOTIFICATION / NOTIFY_OWNER — Phase 6 seam only, never real del
     expect(execSnap.docs).toHaveLength(1);
     const data = execSnap.docs[0].data() as { status: string; failureReason: string | null };
     expect(data.status).toBe("FAILED");
-    expect(data.failureReason).toMatch(/Phase 7/);
+    expect(data.failureReason).toMatch(/Owner\/Staff LINE identity/);
   });
 });
 

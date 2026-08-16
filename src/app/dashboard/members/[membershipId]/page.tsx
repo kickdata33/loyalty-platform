@@ -23,6 +23,21 @@ interface LedgerEntry {
   createdAt: unknown;
 }
 
+interface RewardRow {
+  id: string;
+  name: string;
+  requiredPoints: number;
+  enabled: boolean;
+}
+
+interface VoucherRow {
+  id: string;
+  rewardTemplateId: string;
+  status: "AVAILABLE" | "USED" | "EXPIRED";
+  redeemedAt: unknown;
+  usedAt: unknown;
+}
+
 export default function MemberDetailPage() {
   const params = useParams<{ membershipId: string }>();
   const membershipId = params.membershipId;
@@ -31,6 +46,9 @@ export default function MemberDetailPage() {
 
   const [member, setMember] = useState<MemberDetail | null>(null);
   const [history, setHistory] = useState<LedgerEntry[] | null>(null);
+  const [rewards, setRewards] = useState<RewardRow[] | null>(null);
+  const [vouchers, setVouchers] = useState<VoucherRow[] | null>(null);
+  const [selectedRewardId, setSelectedRewardId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -41,6 +59,12 @@ export default function MemberDetailPage() {
     apiFetchJson<LedgerEntry[]>(`/api/points/history?membershipId=${membershipId}`)
       .then(setHistory)
       .catch(() => setError("โหลดประวัติแต้มไม่สำเร็จ"));
+    apiFetchJson<RewardRow[]>("/api/rewards")
+      .then((all) => setRewards(all.filter((r) => r.enabled)))
+      .catch(() => setError("โหลดรายการรางวัลไม่สำเร็จ"));
+    apiFetchJson<VoucherRow[]>(`/api/rewards/history?membershipId=${membershipId}`)
+      .then(setVouchers)
+      .catch(() => setError("โหลดประวัติรางวัลไม่สำเร็จ"));
   }, [membershipId]);
 
   useEffect(load, [load]);
@@ -125,6 +149,36 @@ export default function MemberDetailPage() {
     );
   }
 
+  async function handleRedeem(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedRewardId) return;
+    await withNotice(
+      () =>
+        apiFetchJson("/api/rewards/redeem", {
+          method: "POST",
+          body: {
+            membershipId,
+            rewardTemplateId: selectedRewardId,
+            visitSource: "STAFF_SEARCH",
+            idempotencyKey: crypto.randomUUID(),
+          },
+        }),
+      "แลกรางวัลเรียบร้อย — ลูกค้าได้รับสิทธิ์แล้ว",
+    );
+  }
+
+  async function handleUseVoucher(voucherId: string) {
+    if (!window.confirm("ยืนยันว่าลูกค้าใช้สิทธิ์นี้แล้ว?")) return;
+    await withNotice(
+      () =>
+        apiFetchJson("/api/rewards/use", {
+          method: "POST",
+          body: { voucherId, visitSource: "STAFF_SEARCH", idempotencyKey: crypto.randomUUID() },
+        }),
+      "ยืนยันการใช้สิทธิ์เรียบร้อย",
+    );
+  }
+
   if (!member) return <StatusMessage title="กำลังโหลด…" />;
 
   return (
@@ -175,6 +229,28 @@ export default function MemberDetailPage() {
             </button>
           </form>
         ) : null}
+
+        {rewards && rewards.length > 0 ? (
+          <form onSubmit={handleRedeem} className="flex flex-col gap-2 rounded border p-4">
+            <h2 className="text-sm font-medium">แลกรางวัล</h2>
+            <select
+              required
+              value={selectedRewardId}
+              onChange={(e) => setSelectedRewardId(e.target.value)}
+              className="rounded border px-3 py-2 text-sm"
+            >
+              <option value="">เลือกรางวัล…</option>
+              {rewards.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} ({r.requiredPoints} แต้ม)
+                </option>
+              ))}
+            </select>
+            <button type="submit" className="w-fit rounded border px-4 py-2 text-sm">
+              แลกรางวัล
+            </button>
+          </form>
+        ) : null}
       </div>
 
       <div>
@@ -210,6 +286,44 @@ export default function MemberDetailPage() {
                       ) : null}
                     </td>
                   ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div>
+        <h2 className="mb-2 text-sm font-medium">ประวัติรางวัล</h2>
+        {vouchers === null ? (
+          <StatusMessage title="กำลังโหลด…" />
+        ) : vouchers.length === 0 ? (
+          <p className="text-sm text-slate-600">ยังไม่มีการแลกรางวัล</p>
+        ) : (
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="py-2">สถานะ</th>
+                <th className="py-2">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {vouchers.map((v) => (
+                <tr key={v.id} className="border-b">
+                  <td className="py-2">
+                    {v.status === "AVAILABLE" ? "พร้อมใช้งาน" : v.status === "USED" ? "ใช้แล้ว" : "หมดอายุ"}
+                  </td>
+                  <td className="py-2">
+                    {v.status === "AVAILABLE" ? (
+                      <button
+                        type="button"
+                        onClick={() => handleUseVoucher(v.id)}
+                        className="rounded border px-2 py-1 text-xs"
+                      >
+                        ยืนยันการใช้สิทธิ์
+                      </button>
+                    ) : null}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -92,13 +92,14 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Phase 3 — Points (§5, §11, §12, §15, §26, §27). All six collections are 100% deny-all
-    // client read/write, by design: unlike merchants/staffUsers/memberships, the Staff Portal
-    // never reads these directly via the client Firestore SDK — every points/rules/history/visit
-    // read and every write goes through the protected API routes (Admin SDK, server-authorized),
-    // same "server is the only path" pattern the Phase 2 review locked in for the dashboard.
-    // pointsLedger/pointsLots/pointsLotConsumptions are append-only-or-controlled-mutation
-    // collections (§12) — there is no scenario where a client should read or write them directly.
+    // Phase 3 — Points (§5, §11, §12, §15, §26, §27). All seven collections below are 100%
+    // deny-all client read/write, by design: unlike merchants/staffUsers/memberships, the Staff
+    // Portal never reads these directly via the client Firestore SDK — every points/rules/
+    // history/visit/event read and every write goes through the protected API routes (Admin SDK,
+    // server-authorized), same "server is the only path" pattern the Phase 2 review locked in for
+    // the dashboard. pointsLedger/pointsLots/pointsLotConsumptions are
+    // append-only-or-controlled-mutation collections (§12) — there is no scenario where a client
+    // should read or write them directly.
     match /pointRules/{ruleId} {
       allow read, write: if false;
     }
@@ -121,6 +122,17 @@ service cloud.firestore {
     // (§17). Written atomically alongside the state change inside the same transaction as every
     // pointsLedger/visits write above — deny-all client access for the same reason.
     match /events/{eventId} {
+      allow read, write: if false;
+    }
+
+    // Phase 4 — Rewards (§5, §13, §26). Same "server is the only path" reasoning as Phase 3 —
+    // Redeem/Use are transactional, staff-limit-adjacent operations (stock decrement, FIFO points
+    // spend, voucher status transition) that must go through the protected API routes, never a
+    // direct client write.
+    match /rewardTemplates/{rewardId} {
+      allow read, write: if false;
+    }
+    match /voucherInstances/{voucherId} {
       allow read, write: if false;
     }
 

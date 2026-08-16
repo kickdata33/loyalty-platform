@@ -1,12 +1,9 @@
 import { FieldValue, Timestamp, type Transaction } from "firebase-admin/firestore";
 
+import { writeEvent } from "@/modules/event/service";
+import { loadMembershipForMerchantTx } from "@/modules/membership/service";
 import { evaluatePointRules } from "@/modules/points/rule-engine";
-import type {
-  AppliedRule,
-  PointRule,
-  PointsEventType,
-  PointsLedgerEntryType,
-} from "@/modules/points/types";
+import type { AppliedRule, PointRule, PointsLedgerEntryType } from "@/modules/points/types";
 import { requireBranchScope, requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
 import type { MerchantRecord, PointsExpirationPolicy, StaffLimits } from "@/modules/merchant/types";
@@ -18,12 +15,13 @@ import {
   ValidationError,
 } from "@/modules/shared/errors";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
+import { checkIdempotencyKey, recordIdempotencyKey } from "@/modules/shared/idempotency";
 import type { AuthContext } from "@/modules/shared/types";
-import type { MembershipRecord } from "@/modules/membership/types";
 
 /**
  * Points Ledger + Lots + FIFO + Expiration + Reversal (FINAL-ARCHITECTURE.md §12) — the
- * transactional core of Phase 3.
+ * transactional core of Phase 3, extended in Phase 4 to be reused by `reward/service.ts` for the
+ * points side of a Reward Redemption (§13).
  *
  * Invariants held throughout this file (all enforced *inside* a single Firestore transaction per
  * operation — never check-then-write, per §9/§26):
@@ -37,69 +35,19 @@ import type { MembershipRecord } from "@/modules/membership/types";
  * - No hard delete, ever — corrections always go through Reversal/Adjustment, never mutate a past
  *   ledger entry.
  * - `events/{eventId}` (§17) written in the same transaction as every state change, even though
- *   nothing consumes them yet (Automation Engine/Reports are Phase 6/8) — see `writeEvent()`.
+ *   nothing consumes them yet (Automation Engine/Reports are Phase 6/8) — see `@/modules/event`.
+ *
+ * `loadMembershipForMerchantTx`, `checkIdempotencyKey`/`recordIdempotencyKey`, and `writeEvent`
+ * used to be private copies in this file (Phase 3) — moved to `membership`/`shared`/`event`
+ * respectively in Phase 4 once a second caller (`reward/service.ts`) needed the exact same
+ * primitives (CLAUDE.md: "ห้ามมี logic ซ้ำสองที่"). `planFifoConsumption`/`applyFifoConsumption`/
+ * `writeLedgerEntry`/`recordVisit` stay owned by this file (points-lot/ledger mechanics are
+ * inherently points-domain logic) but are now `export`ed for the same reason.
  */
 
 const db = () => getDb();
 
 // --- shared helpers ---------------------------------------------------------------------
-
-async function loadMembershipForMerchant(
-  tx: Transaction,
-  membershipId: string,
-  merchantId: string,
-): Promise<MembershipRecord> {
-  const ref = db().collection(COLLECTIONS.memberships).doc(membershipId);
-  const snap = await tx.get(ref);
-  if (!snap.exists) throw new NotFoundError(`Membership ${membershipId} not found.`);
-  const data = { id: snap.id, ...(snap.data() as Omit<MembershipRecord, "id">) };
-  if (data.merchantId !== merchantId) {
-    // `requirePermission(ctx, PERM, ctx.merchantId)` above is trivially true (resourceMerchantId
-    // is the caller's own merchantId, not yet the *target* resource's) — this is the actual
-    // tenant-isolation boundary for a caller-supplied membershipId, so it must throw the same
-    // `TenantIsolationError` every other cross-tenant resource lookup throws (§10, §26), not a
-    // generic `AuthorizationError` — tests assert on the specific type (see tenant-isolation.test.ts).
-    throw new TenantIsolationError(
-      `Staff of merchant ${merchantId} attempted to access a membership of merchant ${data.merchantId}.`,
-    );
-  }
-  return data;
-}
-
-/** Checks + records an idempotency key inside the caller's transaction. Returns the prior
- * resultRef if this key was already used (idempotent replay), or null if this is a first use. */
-async function checkIdempotencyKey(
-  tx: Transaction,
-  merchantId: string,
-  operationType: string,
-  idempotencyKey: string,
-): Promise<string | null> {
-  if (!idempotencyKey || idempotencyKey.trim().length < 8) {
-    throw new ValidationError("idempotencyKey is required (min 8 chars).");
-  }
-  const ref = db().collection(COLLECTIONS.idempotencyKeys).doc(idempotencyKey);
-  const snap = await tx.get(ref);
-  if (snap.exists) {
-    const data = snap.data() as { merchantId: string; operationType: string; resultRef: string };
-    if (data.merchantId !== merchantId || data.operationType !== operationType) {
-      // Same key reused for a different merchant/operation — never trust it as a replay.
-      throw new ConflictError("idempotencyKey was already used for a different operation.");
-    }
-    return data.resultRef;
-  }
-  return null;
-}
-
-function recordIdempotencyKey(
-  tx: Transaction,
-  merchantId: string,
-  operationType: string,
-  idempotencyKey: string,
-  resultRef: string,
-): void {
-  const ref = db().collection(COLLECTIONS.idempotencyKeys).doc(idempotencyKey);
-  tx.create(ref, { merchantId, operationType, resultRef, createdAt: FieldValue.serverTimestamp() });
-}
 
 function computeExpiresAt(policy: PointsExpirationPolicy, earnedAt: Date): Timestamp | null {
   switch (policy.type) {
@@ -221,7 +169,7 @@ function createLot(
  * never-expiring lots ordered by createdAt) and concatenates them, rather than a single `orderBy`
  * that would put never-expiring lots first.
  */
-interface FifoAllocation {
+export interface FifoAllocation {
   lotRef: FirebaseFirestore.DocumentReference;
   lotId: string;
   amountConsumed: number;
@@ -236,7 +184,7 @@ interface FifoAllocation {
  * see `newLedgerRef()`) before committing it, while still having a FIFO read to run — so the read
  * and write halves of a spend/consumption must be independently callable in that order.
  */
-async function planFifoConsumption(
+export async function planFifoConsumption(
   tx: Transaction,
   merchantId: string,
   membershipId: string,
@@ -281,7 +229,7 @@ async function planFifoConsumption(
 
 /** WRITE phase of FIFO consumption — applies a plan from `planFifoConsumption`. Pure writes, safe
  * to call after other writes have already happened in the same transaction. */
-function applyFifoConsumption(
+export function applyFifoConsumption(
   tx: Transaction,
   merchantId: string,
   membershipId: string,
@@ -311,7 +259,7 @@ async function getMerchantOrThrow(merchantId: string): Promise<MerchantRecord> {
   return { id: snap.id, ...(snap.data() as Omit<MerchantRecord, "id">) };
 }
 
-type LedgerEntryParams = {
+export type LedgerEntryParams = {
   merchantId: string;
   membershipId: string;
   branchId: string | null;
@@ -350,7 +298,7 @@ function createLedgerEntry(
 
 /** Convenience wrapper for call sites with no reads left to run afterward (no risk of a
  * read-after-write ordering violation) — generates the ref and writes in one step. */
-function writeLedgerEntry(
+export function writeLedgerEntry(
   tx: Transaction,
   params: LedgerEntryParams,
 ): FirebaseFirestore.DocumentReference {
@@ -359,29 +307,15 @@ function writeLedgerEntry(
   return ref;
 }
 
-/**
- * Writes `events/{eventId}` (§5, §17) in the SAME transaction as the state change it reports —
- * "atomic ป้องกัน event หายเมื่อ state เปลี่ยนแต่ event เขียนไม่สำเร็จ". Nothing consumes these yet
- * (Automation Engine is Phase 6, Report aggregates are Phase 8), but the write itself is not
- * optional/deferrable: retrofitting it into these already-shipped ledger transactions later would
- * mean touching every write path in this file again, exactly what atomicity-at-the-source avoids.
- */
-function writeEvent(
-  tx: Transaction,
-  params: { merchantId: string; type: PointsEventType; membershipId: string; payload: Record<string, unknown> },
-): void {
-  const ref = db().collection(COLLECTIONS.events).doc();
-  tx.create(ref, {
-    merchantId: params.merchantId,
-    type: params.type,
-    membershipId: params.membershipId,
-    payload: params.payload,
-    schemaVersion: 1,
-    createdAt: FieldValue.serverTimestamp(),
-  });
+/** `visits/{visitId}.relatedRefs` (§15) — which of a Visit's possible related entities this
+ * particular visit is tied to. All optional; a caller passes whichever apply. */
+export interface VisitRelatedRefs {
+  pointsLedgerEntryId?: string;
+  couponInstanceId?: string;
+  voucherInstanceId?: string;
 }
 
-function recordVisit(
+export function recordVisit(
   tx: Transaction,
   params: {
     merchantId: string;
@@ -389,7 +323,7 @@ function recordVisit(
     branchId: string | null;
     source: "STAFF_SCAN" | "STAFF_SEARCH" | "MANUAL_ENTRY";
     countsAsVisit: boolean;
-    pointsLedgerEntryId: string;
+    relatedRefs: VisitRelatedRefs;
     createdBy: string;
   },
 ): void {
@@ -400,7 +334,7 @@ function recordVisit(
     branchId: params.branchId,
     source: params.source,
     countsAsVisit: params.countsAsVisit,
-    relatedRefs: { pointsLedgerEntryId: params.pointsLedgerEntryId },
+    relatedRefs: params.relatedRefs,
     recordedAt: FieldValue.serverTimestamp(),
     createdBy: params.createdBy,
   });
@@ -410,7 +344,7 @@ function recordVisit(
       merchantId: params.merchantId,
       type: "visit.recorded",
       membershipId: params.membershipId,
-      payload: { visitId: ref.id, source: params.source, pointsLedgerEntryId: params.pointsLedgerEntryId },
+      payload: { visitId: ref.id, source: params.source, ...params.relatedRefs },
     });
   }
 }
@@ -459,7 +393,7 @@ export async function earnPointsByRule(ctx: AuthContext, input: EarnPointsByRule
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.earn", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing, delta: finalPoints, appliedRules };
 
-    const membership = await loadMembershipForMerchant(tx, input.membershipId, ctx.merchantId);
+    const membership = await loadMembershipForMerchantTx(tx, input.membershipId, ctx.merchantId);
     await assertWithinStaffLimits(
       tx,
       ctx,
@@ -505,7 +439,7 @@ export async function earnPointsByRule(ctx: AuthContext, input: EarnPointsByRule
       branchId: input.branchId,
       source: input.visitSource,
       countsAsVisit: true,
-      pointsLedgerEntryId: ledgerRef.id,
+      relatedRefs: { pointsLedgerEntryId: ledgerRef.id },
       createdBy: ctx.authUid,
     });
 
@@ -548,7 +482,7 @@ export async function addManualPoints(ctx: AuthContext, input: ManualAddPointsIn
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.manual_add", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing, delta: input.amount, appliedRules: [] };
 
-    await loadMembershipForMerchant(tx, input.membershipId, ctx.merchantId);
+    await loadMembershipForMerchantTx(tx, input.membershipId, ctx.merchantId);
     await assertWithinStaffLimits(
       tx,
       ctx,
@@ -625,7 +559,7 @@ export async function adjustPoints(ctx: AuthContext, input: AdjustPointsInput): 
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.adjust", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing };
 
-    await loadMembershipForMerchant(tx, input.membershipId, ctx.merchantId);
+    await loadMembershipForMerchantTx(tx, input.membershipId, ctx.merchantId);
 
     // §12/Firestore: ALL reads in a transaction must happen before ANY write — so a negative
     // delta's FIFO read (`planFifoConsumption`) must run now, before `createLedgerEntry` below,

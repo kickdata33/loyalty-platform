@@ -298,6 +298,37 @@ describe("firestore.rules — Phase 3 points collections: 100% deny-all client r
   });
 });
 
+describe("firestore.rules — Phase 4 reward collections: 100% deny-all client read/write (§13, §26)", () => {
+  // rewardTemplates/voucherInstances: Redeem/Use are transactional operations (FIFO points spend,
+  // stock decrement, status transition) that must go through the protected API routes — same
+  // "server is the only path" reasoning as every Phase 3 collection above.
+  const PHASE_4_COLLECTIONS = ["rewardTemplates", "voucherInstances"] as const;
+
+  it.each(PHASE_4_COLLECTIONS)("%s denies read to same-merchant staff and superAdmin alike", async (name) => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const docId = `x-${randomUUID()}`;
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), name, docId), { merchantId });
+    });
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(getDoc(doc(staff, name, docId)));
+    await assertFails(getDoc(doc(admin, name, docId)));
+  });
+
+  it.each(PHASE_4_COLLECTIONS)("%s denies create/update/delete from any client, including superAdmin", async (name) => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(setDoc(doc(staff, name, `x-${randomUUID()}`), { merchantId }));
+    await assertFails(setDoc(doc(admin, name, `x-${randomUUID()}`), { merchantId }));
+  });
+});
+
 describe("firestore.rules — a SUSPENDED staff claim is not enough for access (structural sanity)", () => {
   it("a client with no role claim at all is denied merchant read (fails closed)", async () => {
     const { merchantId } = await seedMerchant();

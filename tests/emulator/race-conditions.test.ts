@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createMembership } from "@/modules/membership/service";
 import { createMerchantWithOwner } from "@/modules/merchant/service";
 import { addManualPoints, adjustPoints } from "@/modules/points/ledger-service";
+import { confirmVoucherUse, createRewardTemplate, redeemReward } from "@/modules/reward/service";
 import { ConflictError, ValidationError } from "@/modules/shared/errors";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import { createStaffUser } from "@/modules/staff/service";
@@ -173,5 +174,143 @@ describe("Points Ledger — concurrency safety (emulator)", () => {
     const snap = await getDb().collection(COLLECTIONS.memberships).doc(membershipId).get();
     const balance = (snap.data() as { pointsBalance: number }).pointsBalance;
     expect(balance).toBe(3); // 10 - 7, never negative
+  });
+});
+
+/**
+ * Reward Redeem/Use concurrency safety (§9, §12, §13, §26 — "สอง staff กด redeem coupon/reward
+ * เดียวกันพร้อมกัน" is named explicitly in the Security Threat Checklist). Same reasoning as the
+ * Points Ledger race tests above: `redeemReward`/`confirmVoucherUse` contend on the same
+ * `rewardTemplates`/`voucherInstances`/`pointsLots`/`membership` documents, so Firestore's
+ * transaction retry naturally serializes concurrent attempts — no distributed lock needed.
+ */
+describe("Reward Redeem/Use — concurrency safety (emulator)", () => {
+  it("two concurrent redemptions of the LAST unit of stock never both succeed (no oversell)", async () => {
+    const { ownerCtx } = await createMerchantFixture();
+    const rewardId = await createRewardTemplate(ownerCtx, {
+      name: "Last one",
+      type: "FREE_PRODUCT",
+      requiredPoints: 10,
+      stock: 1,
+    });
+    const membershipId = await createMembership(ownerCtx, { displayName: "Race Redeem" });
+    await addManualPoints(ownerCtx, {
+      membershipId,
+      branchId: null,
+      amount: 100,
+      reason: "seed",
+      idempotencyKey: uniqueId("seed"),
+    });
+
+    const results = await Promise.allSettled([
+      redeemReward(ownerCtx, {
+        membershipId,
+        rewardTemplateId: rewardId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey: uniqueId("race-redeem"),
+      }),
+      redeemReward(ownerCtx, {
+        membershipId,
+        rewardTemplateId: rewardId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey: uniqueId("race-redeem"),
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1);
+
+    const templateSnap = await getDb().collection(COLLECTIONS.rewardTemplates).doc(rewardId).get();
+    expect((templateSnap.data() as { stock: number }).stock).toBe(0); // never negative, never both decremented
+  });
+
+  it("two concurrent redemptions with the SAME idempotencyKey never double-spend", async () => {
+    const { ownerCtx } = await createMerchantFixture();
+    const rewardId = await createRewardTemplate(ownerCtx, {
+      name: "Idempotent redeem",
+      type: "FREE_PRODUCT",
+      requiredPoints: 10,
+    });
+    const membershipId = await createMembership(ownerCtx, { displayName: "Race Idempotent" });
+    await addManualPoints(ownerCtx, {
+      membershipId,
+      branchId: null,
+      amount: 10,
+      reason: "seed",
+      idempotencyKey: uniqueId("seed"),
+    });
+    const idempotencyKey = uniqueId("race-redeem-idem");
+
+    const results = await Promise.allSettled([
+      redeemReward(ownerCtx, {
+        membershipId,
+        rewardTemplateId: rewardId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey,
+      }),
+      redeemReward(ownerCtx, {
+        membershipId,
+        rewardTemplateId: rewardId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey,
+      }),
+    ]);
+
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    const voucherIds = new Set(
+      results.map((r) => (r as PromiseFulfilledResult<{ voucherId: string }>).value.voucherId),
+    );
+    expect(voucherIds.size).toBe(1); // both resolved to the SAME voucher, not two
+
+    const snap = await getDb().collection(COLLECTIONS.memberships).doc(membershipId).get();
+    expect((snap.data() as { pointsBalance: number }).pointsBalance).toBe(0); // spent once, not twice
+  });
+
+  it("two concurrent confirmations of Use for the SAME voucher never both succeed", async () => {
+    const { ownerCtx } = await createMerchantFixture();
+    const rewardId = await createRewardTemplate(ownerCtx, {
+      name: "Race use",
+      type: "FREE_PRODUCT",
+      requiredPoints: 10,
+    });
+    const membershipId = await createMembership(ownerCtx, { displayName: "Race Use" });
+    await addManualPoints(ownerCtx, {
+      membershipId,
+      branchId: null,
+      amount: 10,
+      reason: "seed",
+      idempotencyKey: uniqueId("seed"),
+    });
+    const { voucherId } = await redeemReward(ownerCtx, {
+      membershipId,
+      rewardTemplateId: rewardId,
+      branchId: null,
+      visitSource: "STAFF_SEARCH",
+      idempotencyKey: uniqueId("redeem"),
+    });
+
+    const results = await Promise.allSettled([
+      confirmVoucherUse(ownerCtx, {
+        voucherId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey: uniqueId("race-use"),
+      }),
+      confirmVoucherUse(ownerCtx, {
+        voucherId,
+        branchId: null,
+        visitSource: "STAFF_SEARCH",
+        idempotencyKey: uniqueId("race-use"),
+      }),
+    ]);
+
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
   });
 });

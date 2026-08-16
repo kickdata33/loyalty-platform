@@ -1,11 +1,11 @@
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type Transaction } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
 import { createPlatformCustomer } from "@/modules/identity/service";
 import { requireBranchScope, requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
 import type { MembershipRecord } from "@/modules/membership/types";
-import { NotFoundError, ValidationError } from "@/modules/shared/errors";
+import { NotFoundError, TenantIsolationError, ValidationError } from "@/modules/shared/errors";
 import { branchesCollection, COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import type { AuthContext } from "@/modules/shared/types";
 
@@ -106,6 +106,35 @@ export async function getMembership(
   const data = snap.data() as Omit<MembershipRecord, "id">;
   requirePermission(ctx, PERMISSIONS.MEMBER_VIEW, data.merchantId);
   return { id: snap.id, ...data };
+}
+
+/**
+ * Transaction-scoped membership load-then-authorize, for domain services that need to read a
+ * membership as part of a larger atomic write (points earn/adjust/reverse, reward redeem/use, ...)
+ * — `tx.get()` instead of a plain `.get()` so the read participates in the caller's transaction's
+ * optimistic-concurrency check (§12). Throws `TenantIsolationError` (not a generic
+ * `AuthorizationError`) on a cross-tenant `membershipId`, matching every other resource lookup in
+ * this codebase (§10, §26) — tests assert on this specific type.
+ *
+ * Used to be a private copy inside `points/ledger-service.ts` (Phase 3); moved here and exported
+ * in Phase 4 because `reward/service.ts` needs the exact same primitive and CLAUDE.md forbids
+ * duplicating logic across modules ("ห้ามมี logic ซ้ำสองที่").
+ */
+export async function loadMembershipForMerchantTx(
+  tx: Transaction,
+  membershipId: string,
+  merchantId: string,
+): Promise<MembershipRecord> {
+  const ref = getDb().collection(COLLECTIONS.memberships).doc(membershipId);
+  const snap = await tx.get(ref);
+  if (!snap.exists) throw new NotFoundError(`Membership ${membershipId} not found.`);
+  const data = { id: snap.id, ...(snap.data() as Omit<MembershipRecord, "id">) };
+  if (data.merchantId !== merchantId) {
+    throw new TenantIsolationError(
+      `Staff of merchant ${merchantId} attempted to access a membership of merchant ${data.merchantId}.`,
+    );
+  }
+  return data;
 }
 
 export async function listMemberships(ctx: AuthContext): Promise<MembershipRecord[]> {

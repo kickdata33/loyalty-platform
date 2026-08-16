@@ -328,6 +328,9 @@ automations/{id}                  // Single Source of Truth — ครอบค�
   - conditions[{ field, operator, value }]
   - actions[{ type: 'ADD_POINTS'|'ISSUE_COUPON'|'ISSUE_REWARD'|'ADD_TAG'|
               'CHANGE_TIER'|'SEND_NOTIFICATION'|'NOTIFY_OWNER', params{} }]
+    // `CHANGE_TIER` — DEFERRED, Phase 6 Architecture Decision (Locked). Type kept in the union for
+    // forward compatibility only; no Membership Tier system exists. See หัวข้อ 16 "CHANGE_TIER —
+    // Deferred for Phase 6" for the full locked decision.
   - limits{ maxExecPerCustomerPerDay, maxExecPerPromotion, pointBudget, couponBudget, cooldownHours }
   - presentedAs: 'AUTOMATION'|'PROMOTION'  // label เท่านั้น ไม่กระทบ execution
   - marketing?{ title, description, bannerImageUrl, visibleInCustomerPortal }  // เฉพาะ presentedAs='PROMOTION'
@@ -900,6 +903,24 @@ Dry-run: query กลุ่มสมาชิกที่ match condition ปั
 Max execution per customer/day, Max execution per promotion, Point budget, Coupon issuance limit, Cooldown — ตรวจใน transaction เดียวกับการรัน action (ดูหัวข้อ 17)
 
 Scheduled trigger (BIRTHDAY, INACTIVE_DAYS, SCHEDULE) ใช้ Cloud Scheduler + batch query รายวัน แทน real-time event — ยอมรับ latency ระดับวันสำหรับ trigger ประเภทนี้
+
+### CHANGE_TIER — Deferred for Phase 6 (Phase 6 Architecture Decision, Locked 2026-08-16)
+
+**ขอบเขต**: มตินี้ชี้แจงสถานะของ action type `CHANGE_TIER` ที่ปรากฏใน `actions[]` enum (หัวข้อ 5 และหัวข้อนี้) ซึ่งเอกสารก่อนหน้านี้ไม่เคยนิยาม Membership Tier ไว้เลย (ไม่มี field, config, หรือ effect ใดๆ ที่เกี่ยวข้องกับ "tier" บน `memberships` — คำว่า "tier" ที่ปรากฏที่อื่นในเอกสารคือ Package Tier ของหัวข้อ 25 ซึ่งเป็นคนละแนวคิดกัน) — ไม่กระทบ field/schema อื่นของ `automations` ใน §5 ที่มีอยู่แล้ว ไม่ override ข้อความใดที่มีอยู่เดิม:
+
+- **`CHANGE_TIER` ยังคงอยู่ใน `actions[].type` enum เพื่อ forward compatibility เท่านั้น** — ไม่ลบออกจาก schema
+- **Phase 6 ห้าม implement Membership Tier functionality ใดๆ ทั้งสิ้น** — ห้ามเพิ่ม `membership.tier` field, ห้ามเพิ่ม tier configuration บน `merchants/{id}`, ห้ามเพิ่ม tier rule/progression ใดๆ, ห้ามเพิ่ม domain event ประเภท tier-changed
+- **`CHANGE_TIER` ห้ามปรากฏเป็นตัวเลือกใน Owner/Staff UI ใดๆ** ของ Automation/Promotion builder ใน Phase 6
+- **`CHANGE_TIER` ห้าม executable โดย Phase 6 automation executor** — ไม่มี dispatch case ใดๆ รองรับ action type นี้
+- **ความพยายามใช้ `CHANGE_TIER` โดยตรงผ่าน API/data (ไม่ผ่าน UI)** ต้องถูกปฏิเสธด้วย deterministic server-side validation เสมอ (เช่น `ValidationError` ตอน create/update automation ที่มี action type นี้อยู่ใน `actions[]`) — ไม่ silently ignore, ไม่ partial-accept
+- **ห้ามคิดค้น effect ใดๆ ของ `CHANGE_TIER` ต่อ Points, Rewards, Coupons, Membership eligibility, หรือ Reporting** จนกว่าจะมี architecture/product decision cycle แยกต่างหากมาล็อกนิยามที่แท้จริงของ Membership Tier ก่อน (schema, semantics, ความสัมพันธ์กับ Points Rules MULTIPLIER ของหัวข้อ 11 ฯลฯ)
+- Membership Tier ที่แท้จริงเป็น **explicitly deferred item** รอ architecture/product decision cycle ใหม่ในอนาคต ไม่ใช่ V1/Phase 6 scope
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: `actions[].type` enum ที่ §5/§16 ยังคงมี `CHANGE_TIER` อยู่ครบตามเดิม (ไม่ลบ ไม่เปลี่ยน) — มตินี้ระบุแค่ว่ายังไม่มี spec รองรับการ implement จริง จึงต้อง defer ไปก่อน สอดคล้องกับหลัก "ห้ามเดา business rule" ของ CLAUDE.md และ pattern เดียวกับที่ Coupon's `issuedVia` 8 ใน 10 ค่า (หัวข้อ 14) ถูก model ไว้ใน schema โดยไม่มี producer จริงในโค้ดจนกว่า phase ที่เกี่ยวข้องจะมาถึง
+
+### SEND_NOTIFICATION / NOTIFY_OWNER — Delivery remains Phase 7 scope (reaffirmed, not a new decision)
+
+ตามหัวข้อ 23 และหัวข้อ 33 (Phase 7 DoD: "Notification Service + Channel Adapter") — การส่งข้อความจริงผ่าน LINE/ช่องทางใดๆ ยังคงเป็น Phase 7 scope เท่านั้น Phase 6 **ห้าม implement notification delivery จริง** — Phase 6 เตรียมได้แค่ dispatch/idempotency seam (execution record ผ่าน `automationActionExecutions` ตาม deterministic `executionKey` เดียวกับ action type อื่น) โดยไม่มี `ChannelAdapter`/`LineAdapter` จริงอยู่เบื้องหลังจนกว่าจะถึง Phase 7
 
 ---
 
@@ -1530,6 +1551,7 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 | **FINAL-ARCHITECTURE.md (เอกสารนี้)** | รวมทุกเวอร์ชันข้างต้นเป็นฉบับเดียว self-contained ตามลำดับ override: Permission Matrix > v4 > v3 > v2 > v1 — เป็น Source of Truth ปัจจุบันของโปรเจกต์ ใช้แทนการอ้างอิงเอกสาร v1-v4 แยก | **Authoritative — ใช้ไฟล์นี้เป็นหลัก** |
 | Phase 2 Staff API Auth Decision | เพิ่มหัวข้อ 8: "Staff/Owner API Authentication Transport" — เอกสารก่อนหน้านี้ไม่เคยระบุ transport mechanism ที่เป็นรูปธรรมสำหรับ Staff/Owner เรียก API Route; มติกำหนดให้ใช้ `Authorization: Bearer <Firebase ID Token>` + `verifyIdToken()` ฝั่ง server ต่อทุก protected API route, ห้ามเก็บ token เองใน localStorage, ยังไม่ใช้ custom session cookie ใน V1 — เป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 5 Coupon Decisions | เพิ่มหัวข้อ 14: (1) "Coupon Usage Limit & Redemption Atomicity" — เอกสารก่อนหน้านี้ระบุ "Usage Limit" เป็นคำแยกจาก "Total Limit"/"Per Member Limit" ในรายการ Conditions โดยไม่นิยามความต่างไว้ และ `couponInstances.status` schema (§5) เป็น one-way `AVAILABLE→USED` อยู่แล้วโดยไม่มี counter field ใดๆ รองรับ multi-use; มติล็อกว่า V1 = 1 instance redeem ได้ 1 ครั้งเท่านั้น ("Usage Limit" = ขอบเขตนี้ ไม่ใช่แนวคิดแยก), redemption ต้อง atomic transaction + idempotent เสมอ, ห้าม implement multi-use เองโดยไม่ขออนุมัติใหม่ — เหตุผล: ตรงกับ schema/Redemption Flow ที่มีอยู่แล้ว, ลดพื้นผิว race-condition ที่ไม่มี spec รองรับ (2) "Coupon Expiration — Lazy Validation for V1" — ตาราง Scheduled ของหัวข้อ 32 ระบุ `couponExpiration` ไว้โดยไม่บอก phase ที่สร้างจริง; มติล็อกว่า Phase 5 ใช้ lazy validation ที่ redeem/use time เท่านั้น (เทียบ `expiresAt` กับ `serverNow` ใน transaction เดียวกับการเขียน, UI derive สถานะได้แต่ไม่ใช่ security boundary), เลื่อน scheduled sweep ไป phase ที่มี scheduled-infrastructure เป็นงานปกติอยู่แล้ว — เหตุผล: หลีกเลี่ยง premature infrastructure complexity ตามหัวข้อ 0, สอดคล้องกับ pattern เดียวกับ Reward's Voucher Expiration ใน Phase 4 — ทั้งสองมติเป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด ไม่ลบ `couponExpiration` ออกจากตารางหัวข้อ 32 | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
+| Phase 6 CHANGE_TIER Decision | เพิ่มหัวข้อ 16 "CHANGE_TIER — Deferred for Phase 6" + note บนหัวข้อ 5's `automations.actions[]`: เอกสารก่อนหน้านี้ระบุ `CHANGE_TIER` เป็น action type ใน `actions[]` enum (§5, §16) โดยไม่เคยนิยาม Membership Tier field/config/effect ใดๆ เลย (คำว่า "tier" ที่อื่นในเอกสารคือ Package Tier ของหัวข้อ 25 ซึ่งคนละแนวคิด); มติล็อกว่า Phase 6 defer `CHANGE_TIER` ทั้งหมด — คง type ไว้ใน enum เพื่อ forward compatibility เท่านั้น, ห้ามเพิ่ม `membership.tier`/tier config/tier rule/tier-changed event ใดๆ, ห้ามปรากฏใน Owner/Staff UI, ห้าม executable โดย automation executor, ความพยายามใช้ตรงผ่าน API ต้องถูกปฏิเสธด้วย deterministic server-side validation, ห้ามคิดค้น effect ต่อ Points/Rewards/Coupons/eligibility/Reporting เอง — Membership Tier ที่แท้จริงรอ architecture/product decision cycle แยกต่างหากในอนาคต — เหตุผล: หลีกเลี่ยงการเดา business rule ที่ไม่มี spec รองรับ ตาม CLAUDE.md, pattern เดียวกับ Coupon's `issuedVia` ค่าที่ยังไม่มี producer (หัวข้อ 14) — เอกสารเดียวกันนี้ยัง reaffirm ว่า `SEND_NOTIFICATION`/`NOTIFY_OWNER` delivery จริงยังคงเป็น Phase 7 scope ตามหัวข้อ 23/33 เดิม (ไม่ใช่มติใหม่ เพียงยืนยันซ้ำ) — เป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด ไม่ลบ `CHANGE_TIER`/`SEND_NOTIFICATION`/`NOTIFY_OWNER` ออกจาก enum ใดๆ | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 
 ---
 

@@ -4,6 +4,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
 import { issueCouponInstance } from "@/modules/coupon/service";
+import { assertAutomationNotDisabled, assertPointsEngineNotFrozenTx } from "@/modules/emergency-control/service";
 import { writeEvent } from "@/modules/event/service";
 import type { DomainEventType } from "@/modules/event/types";
 import { loadMembershipForMerchantTx } from "@/modules/membership/service";
@@ -12,7 +13,7 @@ import { computeExpiresAt, createLot, writeLedgerEntry } from "@/modules/points/
 import { requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
 import { redeemReward } from "@/modules/reward/service";
-import { NotFoundError, ValidationError } from "@/modules/shared/errors";
+import { NotFoundError, ServiceSuspendedError, ValidationError } from "@/modules/shared/errors";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import type { AuthContext } from "@/modules/shared/types";
 import type {
@@ -450,6 +451,11 @@ export async function executeAutomationAction(params: {
   eventId: string;
 }): Promise<{ status: "EXECUTED" | "SKIPPED_LIMIT" | "FAILED" | "ALREADY_PROCESSED" }> {
   const { automation, actionIndex, membershipId, eventId } = params;
+  // Emergency Control (§37.2): single choke point for `automationDisabled` — covers both
+  // real-time dispatch (`dispatchEventToAutomations`) and the scheduled batch
+  // (`dailyAutomationBatch`), since both call this function for every action they run.
+  await assertAutomationNotDisabled(automation.merchantId);
+
   const action = automation.actions[actionIndex];
   const executionKey = computeExecutionKey(eventId, automation.id, membershipId, actionIndex);
   const db = getDb();
@@ -469,6 +475,19 @@ export async function executeAutomationAction(params: {
       }
 
       if (action.type === "ADD_POINTS") {
+        // Emergency Control §37.2 — recorded as a normal FAILED execution (same pattern as the
+        // "invalid amount" case just below), NOT rethrown: a frozen points engine is an expected,
+        // non-transient business-state block, not an infra error that should make Cloud Functions
+        // retry this event forever (§17's rethrow policy is reserved for genuine infra errors).
+        try {
+          await assertPointsEngineNotFrozenTx(tx, automation.merchantId);
+        } catch (err) {
+          if (err instanceof ServiceSuspendedError) {
+            tx.create(executionRef, baseExecutionDoc(automation, action, actionIndex, eventId, membershipId, "FAILED", null, err.message));
+            return { status: "FAILED" as const };
+          }
+          throw err;
+        }
         const amount = Number(action.params.amount);
         if (!Number.isInteger(amount) || amount <= 0) {
           tx.create(executionRef, baseExecutionDoc(automation, action, actionIndex, eventId, membershipId, "FAILED", null, "invalid amount in action.params"));
@@ -476,7 +495,7 @@ export async function executeAutomationAction(params: {
         }
         const merchantSnap = await tx.get(db.collection(COLLECTIONS.merchants).doc(automation.merchantId));
         const merchant = merchantSnap.data() as { pointsExpirationPolicy: Parameters<typeof computeExpiresAt>[0] };
-        const ledgerRef = writeLedgerEntry(tx, {
+        const ledgerRef = await writeLedgerEntry(tx, {
           merchantId: automation.merchantId,
           membershipId,
           branchId: null,

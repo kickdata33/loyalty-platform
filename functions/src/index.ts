@@ -21,6 +21,8 @@ import {
   recomputeMemberSnapshotForMerchant,
   updateDailyStatsForEvent,
 } from "../../src/modules/report/service";
+import { SYSTEM_HEALTH_COMPONENTS } from "../../src/modules/system-health/types";
+import type { SystemHealthStatus } from "../../src/modules/system-health/types";
 
 // Ambient service identity in the Cloud Functions runtime (and the emulator) — no config needed,
 // never a hard-coded credential (FINAL-ARCHITECTURE.md §1, §26).
@@ -234,4 +236,81 @@ export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
       }
     }
   }
+
+  // System Health foundation (§32, §37; Phase 9) — the ONLY honest signal this codebase has for
+  // the "Scheduler" component: "this batch job actually completed a full run just now". Read by
+  // `systemHealthSelfCheck` below to derive a staleness-based status; this write only records the
+  // fact, never a status judgement, since a per-run write is unconditional (this line is only
+  // reached after every merchant above finished without throwing).
+  await db
+    .collection("systemHealth")
+    .doc("Scheduler")
+    .set({ component: "Scheduler", lastCheckedAt: Timestamp.now() }, { merge: true });
+});
+
+/**
+ * System Health self-check (§32, §37.1 note; Phase 9 foundation). Runs independently of
+ * `dailyAutomationBatch` so a health check isn't gated on that job's own (potentially long) run.
+ *
+ * Writes a REAL status for exactly two components this codebase has an honest signal for:
+ * - `Database`: a live Firestore round-trip write+read, timed — `DOWN` only if the round trip
+ *   itself throws (no invented latency/quota threshold).
+ * - `Scheduler`: staleness of the heartbeat `dailyAutomationBatch` writes at the end of its own
+ *   run (above) — `DEGRADED` if the last completed run is more than 26 hours old (the job runs
+ *   every 24h; 26h is slack, not a business threshold), `UNKNOWN` if it has never run yet.
+ *
+ * The remaining five named components (§32: LINE, AutomationWorker, Reports, Authentication,
+ * ErrorJobs) are written as `UNKNOWN` — deliberately, not a fabricated `OK`/`DEGRADED` — since no
+ * metric for any of them is specified anywhere in FINAL-ARCHITECTURE.md and inventing one here
+ * would be inventing a business rule (CLAUDE.md §0). Real instrumentation for these is future work
+ * (see the Phase 9 implementation report's "remaining known limitations").
+ */
+export const systemHealthSelfCheck = onSchedule("every 15 minutes", async () => {
+  const db = getFirestore();
+  const now = Timestamp.now();
+  const healthCollection = db.collection("systemHealth");
+
+  const dbCheckStart = Date.now();
+  let dbStatus: SystemHealthStatus = "OK";
+  let dbMessage: string | null = null;
+  try {
+    const probeRef = healthCollection.doc("__selfCheckProbe__");
+    await probeRef.set({ probedAt: now }, { merge: true });
+    await probeRef.get();
+    dbMessage = `round-trip ${Date.now() - dbCheckStart}ms`;
+  } catch (err) {
+    dbStatus = "DOWN";
+    dbMessage = err instanceof Error ? err.message : "unknown error";
+  }
+  await healthCollection
+    .doc("Database")
+    .set({ component: "Database", status: dbStatus, message: dbMessage, lastCheckedAt: now });
+
+  const schedulerSnap = await healthCollection.doc("Scheduler").get();
+  const lastSchedulerRunAt = schedulerSnap.exists
+    ? (schedulerSnap.data() as { lastCheckedAt?: Timestamp }).lastCheckedAt
+    : undefined;
+  let schedulerStatus: SystemHealthStatus = "UNKNOWN";
+  let schedulerMessage = "dailyAutomationBatch has not reported a completed run yet.";
+  if (lastSchedulerRunAt) {
+    const hoursSinceLastRun = (now.toMillis() - lastSchedulerRunAt.toMillis()) / (1000 * 60 * 60);
+    schedulerStatus = hoursSinceLastRun <= 26 ? "OK" : "DEGRADED";
+    schedulerMessage = `last completed run ${hoursSinceLastRun.toFixed(1)}h ago`;
+  }
+  await healthCollection.doc("Scheduler").set(
+    { component: "Scheduler", status: schedulerStatus, message: schedulerMessage, lastCheckedAt: lastSchedulerRunAt ?? null },
+    { merge: true },
+  );
+
+  const uninstrumented = SYSTEM_HEALTH_COMPONENTS.filter((c) => c !== "Database" && c !== "Scheduler");
+  await Promise.all(
+    uninstrumented.map((component) =>
+      healthCollection.doc(component).set({
+        component,
+        status: "UNKNOWN" satisfies SystemHealthStatus,
+        message: "Not yet instrumented — no metric defined in FINAL-ARCHITECTURE.md §32 for this component.",
+        lastCheckedAt: now,
+      }),
+    ),
+  );
 });

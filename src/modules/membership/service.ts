@@ -1,6 +1,7 @@
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
+import { enforceEntitlementLimitTx } from "@/modules/billing-entitlement/service";
 import { writeEvent } from "@/modules/event/service";
 import { createPlatformCustomer } from "@/modules/identity/service";
 import { requireBranchScope, requirePermission } from "@/modules/rbac/authorization-service";
@@ -58,6 +59,10 @@ export async function createMembership(
   // MEMBER_CREATED trigger / "Welcome" preset — is written atomically with the membership doc
   // itself (§17: "เขียนใน transaction เดียวกัน"), not as a separate best-effort call.
   await db.runTransaction(async (tx) => {
+    // Entitlement Limit Enforcement (§37.3, Locked) — must run before any write in this
+    // transaction (Firestore: all reads before all writes).
+    await enforceEntitlementLimitTx(tx, ctx.merchantId, "member");
+
     tx.create(ref, {
       platformCustomerId,
       merchantId: ctx.merchantId,

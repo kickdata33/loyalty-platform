@@ -27,3 +27,19 @@ export interface AuthContext {
 
 /** actorType values used across auditLogs/pointsLedger/etc. (§18). */
 export type ActorType = "staff" | "superAdmin" | "system";
+
+/**
+ * The verified identity of a Super Admin caller (FINAL-ARCHITECTURE.md §37.1).
+ *
+ * Deliberately NOT `AuthContext` — a Super Admin has no `merchantId`/`role`/`staffUserId` claim
+ * (§6: superAdmin is `{ superAdmin: true }` only, set out-of-band via script/console, never via
+ * `onStaffUserWrite`). Keeping this a separate, narrower type means the Authorization Service's
+ * `requirePermission`/`requireOwner` (which assume a real merchant-scoped Owner/Manager/Staff)
+ * can never be accidentally satisfied by a Super Admin caller — Super Admin merchant access is
+ * always mediated by an explicit, audited Support Session (`@/modules/support-session/service`),
+ * never by widening what `AuthContext` accepts.
+ */
+export interface SuperAdminAuthContext {
+  /** Firebase Auth uid of the signed-in Super Admin. */
+  authUid: string;
+}

@@ -20,6 +20,10 @@ export interface StaffClaims {
   merchantId?: string;
   role?: string;
   staffUserId?: string;
+  /** Phase 9 (§37) — `true` only for Super Admin accounts, set out-of-band via script/console
+   * (§6), never via `onStaffUserWrite`. UX-only gate for `/superadmin/*` (§10) — the real
+   * boundary is `requireSuperAdminAuthContext` server-side. */
+  superAdmin?: boolean;
 }
 
 interface AuthState {

@@ -1,4 +1,5 @@
 import { writeAuditLog } from "@/modules/audit/service";
+import { enforceEntitlementLimitTx } from "@/modules/billing-entitlement/service";
 import { requireOwner, requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
 import type { StaffUserRecord } from "@/modules/staff/types";
@@ -71,6 +72,10 @@ export async function createStaffUser(
   // one authUid — Firestore's transaction conflict detection retries the loser, and its retry
   // observes the winner's now-existing document.
   await db.runTransaction(async (tx) => {
+    // Entitlement Limit Enforcement (§37.3, Locked) — must run before any write in this
+    // transaction (Firestore: all reads before all writes).
+    await enforceEntitlementLimitTx(tx, ctx.merchantId, "staff");
+
     const dupQuery = db
       .collection(COLLECTIONS.staffUsers)
       .where("merchantId", "==", ctx.merchantId)

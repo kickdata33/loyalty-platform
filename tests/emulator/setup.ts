@@ -4,7 +4,7 @@ import { getAdminAuth } from "@/lib/firebase/admin";
 import { createMerchantWithOwner } from "@/modules/merchant/service";
 import { syncStaffCustomClaims } from "@/modules/rbac/staff-claims";
 import { getDb } from "@/modules/shared/firestore";
-import type { AuthContext } from "@/modules/shared/types";
+import type { AuthContext, SuperAdminAuthContext } from "@/modules/shared/types";
 import { createStaffUser } from "@/modules/staff/service";
 
 import { getIdTokenForExistingUid } from "./client-auth";
@@ -116,6 +116,20 @@ export async function addStaffFixture(
  * `./client-auth.ts`). */
 export async function idTokenFor(authUid: string): Promise<string> {
   return getIdTokenForExistingUid(authUid);
+}
+
+export interface SuperAdminFixture {
+  authUid: string;
+  ctx: SuperAdminAuthContext;
+}
+
+/** Creates a real Firebase Auth emulator user with `{ superAdmin: true }` custom claim (§6, §37)
+ * — set out-of-band the same way it would be in production (`setCustomUserClaims` directly, never
+ * via `onStaffUserWrite`, which never touches this claim). */
+export async function createSuperAdminFixture(): Promise<SuperAdminFixture> {
+  const authUid = await createTestAuthUser("superadmin");
+  await getAdminAuth().setCustomUserClaims(authUid, { superAdmin: true });
+  return { authUid, ctx: { authUid } };
 }
 
 /** Builds a `Request` with a JSON body and/or a Bearer token — shared by every API route test. */

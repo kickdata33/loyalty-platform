@@ -3,6 +3,7 @@ import "server-only";
 import type { DecodedIdToken } from "firebase-admin/auth";
 
 import { getAdminAuth } from "@/lib/firebase/admin";
+import { assertMerchantStaffNotSuspended } from "@/modules/emergency-control/service";
 import { buildAuthContext } from "@/modules/shared/auth-context";
 import { AuthenticationError } from "@/modules/shared/errors";
 import type { AuthContext } from "@/modules/shared/types";
@@ -69,5 +70,10 @@ export async function verifyBearerToken(request: Request): Promise<DecodedIdToke
  */
 export async function requireStaffAuthContext(request: Request): Promise<AuthContext> {
   const decoded = await verifyBearerToken(request);
-  return buildAuthContext(decoded);
+  const ctx = buildAuthContext(decoded);
+  // Emergency Control (§37.2): a Super-Admin-wide "Suspend Staff" kill-switch for this merchant.
+  // Single choke point for every protected Staff/Owner route (§10 "ห้ามใส่ permission check
+  // กระจาย") — Customer Portal never calls this function, so it is never affected.
+  await assertMerchantStaffNotSuspended(ctx.merchantId);
+  return ctx;
 }

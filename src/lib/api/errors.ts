@@ -7,6 +7,7 @@ import {
   AuthorizationError,
   ConflictError,
   NotFoundError,
+  ServiceSuspendedError,
   TenantIsolationError,
   ValidationError,
 } from "@/modules/shared/errors";
@@ -40,6 +41,9 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof ConflictError) {
     return NextResponse.json({ error: error.code, message: error.message }, { status: 409 });
+  }
+  if (error instanceof ServiceSuspendedError) {
+    return NextResponse.json({ error: error.code, message: error.message }, { status: 503 });
   }
 
   // Server-side diagnostic only — never sent to the client.

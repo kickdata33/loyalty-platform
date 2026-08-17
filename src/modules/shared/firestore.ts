@@ -55,6 +55,10 @@ export const COLLECTIONS = {
   // Phase 8 — Reports (§5, §24)
   reports: "reports",
   merchantDailyStats: "merchantDailyStats",
+  // Phase 9 — Platform Admin (§37)
+  supportSessions: "supportSessions",
+  emergencyControls: "emergencyControls",
+  systemHealth: "systemHealth",
 } as const;
 
 /** Sub-collection path helper: `merchants/{merchantId}/branches`. */

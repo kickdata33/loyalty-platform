@@ -1,6 +1,6 @@
 import { FieldValue } from "firebase-admin/firestore";
 
-import { createDefaultSubscription } from "@/modules/billing-entitlement/service";
+import { createDefaultSubscription, enforceEntitlementLimitTx } from "@/modules/billing-entitlement/service";
 import { writeAuditLog } from "@/modules/audit/service";
 import { requirePermission } from "@/modules/rbac/authorization-service";
 import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
@@ -16,6 +16,8 @@ import type {
 import { ConflictError, NotFoundError, ValidationError } from "@/modules/shared/errors";
 import { branchesCollection, COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import type { AuthContext } from "@/modules/shared/types";
+import type { StaffUserRecord } from "@/modules/staff/types";
+import type { SubscriptionRecord } from "@/modules/billing-entitlement/types";
 
 /**
  * Merchant/Branch foundation (FINAL-ARCHITECTURE.md §4, §5). Onboarding UX (wizard, branding
@@ -204,7 +206,12 @@ export async function createBranch(
   }
 
   const ref = branchesCollection(input.merchantId).doc();
-  await ref.set({ name: input.name, address: input.address, isActive: true });
+  // Entitlement Limit Enforcement (§37.3, Locked) — wrapped in a transaction (this write was
+  // previously a plain `.set()`) so the count-then-create is atomic, same as member/staff.
+  await getDb().runTransaction(async (tx) => {
+    await enforceEntitlementLimitTx(tx, input.merchantId, "branch");
+    tx.create(ref, { name: input.name, address: input.address, isActive: true });
+  });
 
   await writeAuditLog({
     merchantId: input.merchantId,
@@ -313,4 +320,58 @@ export async function getPublicMerchantProfileBySlug(
   const lineConfigSnap = await getDb().collection(COLLECTIONS.lineChannelConfigs).doc(doc.id).get();
   const liffId = lineConfigSnap.exists ? (lineConfigSnap.data() as { loginChannel: { liffId: string | null } }).loginChannel.liffId : null;
   return { merchantId: doc.id, name: data.name, slug: data.slug, branding: data.branding, liffId };
+}
+
+// --- Super Admin reads (§37; Phase 9 — Merchant list/detail) -----------------------------------
+//
+// `firestore.rules` already permits `isSuperAdmin()` to read `merchants`/`staffUsers`/
+// `subscriptions` directly via the client SDK (§3, present since Phase 1) — these server-side
+// equivalents exist instead so `/superadmin/*` follows the SAME "server is the only path" pattern
+// every other page in this codebase already uses (no page anywhere calls the client Firestore SDK
+// directly for reads; see `src/lib/api/client.ts`), rather than introducing a second, inconsistent
+// data-access pattern just for this one section of the app.
+
+export interface SuperAdminMerchantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  businessType: string;
+  subscriptionStatus: string | null;
+}
+
+/** Takes no `SuperAdminAuthContext` — like `getMerchantRecordOrThrow` above, this is a
+ * system-level read gated entirely by the caller (every `/api/superadmin/*` route calls
+ * `requireSuperAdminAuthContext` first) rather than by any per-call scoping this function itself
+ * would need `admin` for. */
+export async function listMerchantsForSuperAdmin(): Promise<SuperAdminMerchantSummary[]> {
+  const db = getDb();
+  const merchantsSnap = await db.collection(COLLECTIONS.merchants).get();
+  return Promise.all(
+    merchantsSnap.docs.map(async (doc) => {
+      const data = doc.data() as Omit<MerchantRecord, "id">;
+      const subSnap = await db.collection(COLLECTIONS.subscriptions).doc(doc.id).get();
+      const status = subSnap.exists ? (subSnap.data() as SubscriptionRecord).status : null;
+      return { id: doc.id, name: data.name, slug: data.slug, businessType: data.businessType, subscriptionStatus: status };
+    }),
+  );
+}
+
+export interface SuperAdminMerchantDetail {
+  merchant: MerchantRecord;
+  subscription: SubscriptionRecord | null;
+  staff: StaffUserRecord[];
+}
+
+export async function getMerchantDetailForSuperAdmin(merchantId: string): Promise<SuperAdminMerchantDetail> {
+  const merchant = await getMerchantRecordOrThrow(merchantId);
+  const db = getDb();
+  const [subSnap, staffSnap] = await Promise.all([
+    db.collection(COLLECTIONS.subscriptions).doc(merchantId).get(),
+    db.collection(COLLECTIONS.staffUsers).where("merchantId", "==", merchantId).get(),
+  ]);
+  return {
+    merchant,
+    subscription: subSnap.exists ? ({ merchantId, ...(subSnap.data() as Omit<SubscriptionRecord, "merchantId">) }) : null,
+    staff: staffSnap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<StaffUserRecord, "id">) })),
+  };
 }

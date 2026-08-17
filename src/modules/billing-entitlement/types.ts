@@ -57,3 +57,8 @@ export interface Entitlement {
   branchLimit: number | null;
   features: Partial<PackageFeatures>;
 }
+
+/** §37.3 (Phase 9, Locked) — the three "create new" resource types a package hard limit gates.
+ * Deliberately a closed union (not an open string) so a typo/unsupported resource type is a
+ * compile error, not a silently-unenforced limit. */
+export type EntitlementResourceType = "member" | "staff" | "branch";

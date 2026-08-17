@@ -445,6 +445,55 @@ describe("firestore.rules — Phase 8 report collections: 100% deny-all client r
   });
 });
 
+describe("firestore.rules — Phase 9 supportSessions/emergencyControls: 100% deny-all, even superAdmin (§37.1, §37.2, §26)", () => {
+  const PHASE_9_DENY_ALL_COLLECTIONS = ["supportSessions", "emergencyControls"] as const;
+
+  it.each(PHASE_9_DENY_ALL_COLLECTIONS)("%s denies read to same-merchant staff (even Owner) and superAdmin alike", async (name) => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const docId = `x-${randomUUID()}`;
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), name, docId), { merchantId });
+    });
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(getDoc(doc(staff, name, docId)));
+    await assertFails(getDoc(doc(admin, name, docId)));
+  });
+
+  it.each(PHASE_9_DENY_ALL_COLLECTIONS)("%s denies create/update/delete from any client, including superAdmin", async (name) => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(setDoc(doc(staff, name, `x-${randomUUID()}`), { merchantId }));
+    await assertFails(setDoc(doc(admin, name, `x-${randomUUID()}`), { merchantId }));
+  });
+});
+
+describe("firestore.rules — Phase 9 systemHealth: Super-Admin-only read, no client write ever (§32, §37)", () => {
+  it("denies read to same-merchant staff (even Owner), allows read to superAdmin", async () => {
+    const { merchantId, staffUserId } = await seedMerchant();
+    const componentId = "Database";
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), "systemHealth", componentId), { component: componentId, status: "OK" });
+    });
+    const staff = testEnv
+      .authenticatedContext(`u-${randomUUID()}`, ownerClaims(merchantId, staffUserId))
+      .firestore();
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(getDoc(doc(staff, "systemHealth", componentId)));
+    await assertSucceeds(getDoc(doc(admin, "systemHealth", componentId)));
+  });
+
+  it("denies write from any client, including superAdmin", async () => {
+    const admin = testEnv.authenticatedContext(`u-${randomUUID()}`, { superAdmin: true }).firestore();
+    await assertFails(setDoc(doc(admin, "systemHealth", `x-${randomUUID()}`), { status: "OK" }));
+  });
+});
+
 describe("firestore.rules — a SUSPENDED staff claim is not enough for access (structural sanity)", () => {
   it("a client with no role claim at all is denied merchant read (fails closed)", async () => {
     const { merchantId } = await seedMerchant();

@@ -1728,9 +1728,125 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 | Phase 7 Messaging API Access Token Decision | เพิ่มหัวข้อ 19 "Messaging API Channel Access Token — Phase 7 V1 Architecture Decision" + note บน Step 4/5a ของหัวข้อ 20: §35-mandated spike ต่อบัญชี LINE Developer จริง (Provider เชื่อมกับ Shop_member OA @406plisw) ยืนยันว่า `client_credentials` token issuance ใช้ได้จริงกับ LINE Login channel แต่ล้มเหลวซ้ำหลายครั้งกับ Messaging API channel ของบัญชีทดสอบนี้ (ลองทั้ง `/oauth2/v3/token`, legacy `/v2/oauth/accessToken`, และ Channel Secret ที่ reissue ใหม่หลายรอบ) แม้เอกสารเดิมหัวข้อ 19 จะระบุว่า platform ออก token เองทั้งสอง channel ผ่าน `client_credentials` ได้; มติล็อกว่า Phase 7 V1 ใช้ **Console-issued long-lived Channel Access Token** ของ Messaging API channel แทน (Owner คัดลอกมาครั้งเดียวในขั้นตอนเชื่อมต่อ) เก็บผ่าน Secret Manager reference เดียวกับ `lineChannelConfigs.messagingChannel.accessTokenRef` ที่มีอยู่แล้ว (ไม่เพิ่ม field ใหม่), ตัวแปร credential ที่ `LineAdapter` ใช้คือ `LINE_MESSAGING_CHANNEL_ACCESS_TOKEN`, ห้าม hardcode/log/expose ค่านี้ที่ใดก็ตาม — LINE Login channel ไม่กระทบ ยังคง self-issue ผ่าน `client_credentials` ตามเดิม — self-issued token สำหรับ Messaging API channel เป็น explicitly deferred item รอ revisit ในอนาคต — เหตุผล: ข้อจำกัดที่พิสูจน์แล้วจริงของ channel/account configuration นี้ผ่านการทดสอบหลายรอบ ไม่ใช่การเดา ไม่ใช่ bug ของ implementation — เป็นการเติมช่องว่าง ไม่ override หลักการ Secret Manager reference/ห้ามเก็บ secret ใน client-accessible document ที่มีอยู่เดิม ไม่เปลี่ยน `lineChannelConfigs` schema | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 8 Activity Stats Maintenance Decision | เพิ่มหัวข้อ 15 "Activity Stats Maintenance — Phase 8 Architecture Decision": Phase 8 Planning Review พบว่า `membership.activityStats.{lastVisitAt, firstVisitAt, visitCount30d, visitCount90d}` (ประกาศไว้แล้วที่หัวข้อ 5/7/15) ไม่เคยมี code path ใดเขียนค่าเหล่านี้ตั้งแต่ Phase 3 นอกจากค่าเริ่มต้นตอนสร้าง Membership ทำให้ `segment` recalculation ของ `dailyAutomationBatch` (Phase 6) เป็น no-op ถาวรในทางปฏิบัติ (Blocker ต่อ Phase 8 Reports' segment-based KPI); มติล็อกว่า `recordVisit()` ต้องตั้ง `firstVisitAt` (ครั้งแรกที่ยังเป็น null เท่านั้น) และ `lastVisitAt` (ทุกครั้ง) ภายใน transaction เดียวกับการเขียน `visits/{visitId}` เมื่อ `countsAsVisit=true`, ส่วน `visitCount30d`/`visitCount90d` เป็น rolling window ที่ต้องคำนวณใหม่ทุกวันโดย `dailyAutomationBatch` เดียวกับที่คำนวณ `segment` อยู่แล้ว (ไม่สร้าง batch job แยก) โดย query `visits` ด้วย composite index ที่มีอยู่แล้ว (หัวข้อ 28) — ห้าม implement เป็น counter สะสมไม่มีวันลด และห้ามเปลี่ยนเป็นคำนวณสดอย่างเดียว (จะทำให้ Automation Engine's `evaluateConditions()` ที่มีอยู่แล้วตั้งแต่ Phase 6 อ่านค่าไม่ได้) — เหตุผล: เติมช่องว่าง "ใครเขียนค่า เมื่อไหร่" ที่เอกสารเดิมไม่เคยระบุ ไม่เปลี่ยน field name/type/พฤติกรรม `segment` recalculation ที่มีอยู่แล้ว เป็นการเติมช่องว่าง ไม่ override ข้อความใดที่มีอยู่เดิม | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 8 Reports Decisions | เพิ่มหัวข้อ 24 สามส่วน: (1) "Report Settings Schema Location" — ล็อกว่า `reportSettings` ที่เอกสารเดิมพูดถึงในรูปประโยค ("ตาม merchant.reportSettings") แต่ไม่เคยปรากฏในตาราง schema ของหัวข้อ 5 เป็น field แบบ embedded บน `merchants/{merchantId}` (ตรงกับ pattern `staffLimits{}`/`segmentRulesConfig{}` เดิม) พร้อม field list `{ dailyEnabled, weeklyEnabled, monthlyEnabled, dailyItems[], weeklyItems[], monthlyItems[] }` ที่ item ต้องตรงกับรายการที่หัวข้อ 24 ระบุไว้แล้วเท่านั้น (2) "Report Delivery Channel Scope" — เอกสารเดิมระบุช่องทาง "Dashboard, LINE, Email (future)" โดยไม่เคยตรวจสอบว่า LINE เป็นไปได้จริงสำหรับผู้รับ Owner/Staff ซึ่งติด block เดียวกับ Phase 7 NOTIFY_OWNER Decision ที่ล็อกไว้แล้วว่าห้าม implement Owner/Staff LINE identity resolution; มติล็อกว่า Phase 8 V1 ส่งมอบเฉพาะ Dashboard delivery, `deliveredChannels[]` เก็บได้แค่ `'DASHBOARD'`, ห้ามนำ `notificationSettings.testRecipientLineUserId` มาใช้ซ้ำสำหรับ Report, LINE delivery ยังไม่มีกำหนดเวลาเช่นเดียวกับ NOTIFY_OWNER (3) "Report Period Boundaries — Merchant-Local Timezone" — ล็อกว่า `periodStart`/`periodEnd` ของ Report และ document id ของ `merchantDailyStats/{merchantId_date}` ต้องคำนวณจาก `merchants/{merchantId}.timezone` ของแต่ละร้านเองผ่าน `Intl.DateTimeFormat` ของ Node runtime (ไม่เพิ่ม dependency ใหม่) ไม่ใช่ UTC-day boundary แบบ internal key ของ `dailyAutomationBatch` (Phase 6, ซึ่งไม่เปลี่ยนแปลงจากมตินี้) เพราะ Report period เป็นข้อมูลที่ Owner อ่านตรงๆ — เหตุผลทั้งสามข้อ: เติมช่องว่างที่เอกสารเดิมไม่เคยระบุ สอดคล้องกับหลักการเดิมของหัวข้อ 0/9/23 (timezone-aware, ห้ามเดา business rule, ห้าม implement Owner/Staff LINE identity) ไม่ override/ลบ field หรือ enum ใดที่มีอยู่เดิม | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
+| Phase 9 Platform Admin Decisions (Blockers 1-3) | เพิ่มหัวข้อ 37 "Platform Admin — Phase 9 Locked Blocker Decisions" สามเรื่อง หลัง Phase 9 Planning Review พบว่า §18/§26/§32/§33 สั่งให้มี Support/View-as-Owner Mode, Emergency Control, และการบังคับ Package hard limit โดยไม่เคยนิยามกลไกจริงไว้เลย: (1) "Support Session Model" — ล็อกว่า Super Admin (custom claim `{superAdmin:true}`, ไม่มี merchantId claim) เข้าถึงข้อมูลระดับ merchant ผ่าน `supportSessions/{sessionId}` (server-write-only, deny-all client) ที่ต้องเลือก merchant + ระบุเหตุผลก่อนเปิด, หมดอายุอัตโนมัติ, ปิดได้ทันที (deterministic revocation) — **ไม่มีการตั้ง/ปลอม Owner custom claims ใดๆ ทั้งสิ้น** (ไม่ใช่ code path ที่สองของ §10's onStaffUserWrite), ทุก request ที่เกิดขึ้นระหว่าง session ถูก audit ด้วย actorType `superAdmin` + `supportSessionId` จริงเสมอ ไม่ปนกับ actorType `staff`; ขอบเขต V1 คือ **read-only "View-as" เท่านั้น** (อ่านข้อมูล deny-all-ทุกคน เช่น pointsLedger/automations/notificationLog ของ merchant ที่เลือกไว้ผ่าน session) — Support Session **ไม่ใช่ทางผ่านสำหรับ Super Admin เขียน/แก้ business state แทน Owner** ใน V1 นี้ (ความสามารถเขียนแทน Owner ยังเป็น open decision รอ approval แยกในอนาคต หากต้องการ) (2) "Emergency Control Service State" — ล็อกว่าใช้ collection ใหม่ `emergencyControls/{merchantId}` (server-write-only, deny-all client ทั้ง read/write) แยกจาก `subscriptions/{merchantId}` โดยสิ้นเชิง (§25's Single Source of Truth ยังคงหมายถึง billing state เท่านั้น ไม่ปนกับ ops/incident-response state ใหม่นี้) มี toggle รายตัวอิสระต่อกัน `staffSuspended`/`pointsEngineFrozen`/`automationDisabled`/`broadcastDisabled` บังคับใช้ผ่าน enforcement helper เดียวที่จุดเดียวต่อ 1 ความสามารถ (`requireStaffAuthContext` สำหรับ staffSuspended, `createLedgerEntry` สำหรับ pointsEngineFrozen — ครอบคลุมทุก entry/spend ของแต้มรวมถึง reversal/automation ADD_POINTS, `executeAutomationAction` สำหรับ automationDisabled, `sendBroadcast`/`sendTestBroadcast` สำหรับ broadcastDisabled) ทุกครั้งที่ Super Admin เปลี่ยน toggle ต้องมี reason + audit log (3) "Entitlement Limit Enforcement" — ล็อกว่าบังคับ `memberLimit`/`staffLimit`/`branchLimit` ด้วย live Firestore `count()` aggregation query ที่ scope ด้วย server-derived merchantId เสมอ อ่านภายใน Firestore transaction เดียวกับ write ที่สร้าง resource ใหม่ (ไม่ check-then-write แยก step, ไม่เก็บ denormalized counter ใหม่) จุดที่ต้อง retrofit คือ `createMembership`/`createStaffUser`/`createBranch` เท่านั้น (`staffLimit` นับเฉพาะ StaffUser ที่สร้างผ่าน `createStaffUser` คือ role MANAGER/STAFF ไม่รวม Owner ซึ่งสร้างผ่าน `createMerchantWithOwner` คนละ path) — ทั้งสามมติเป็นการเติมช่องว่างที่ไม่เคยมี mechanism รองรับมาก่อน ไม่ override ข้อความเดิมข้อใดใน §18/§25/§26/§32/§33 ไม่เปลี่ยน Permission Matrix V1 ไม่เพิ่ม role ใหม่ ไม่เปิด custom claims code path ที่สอง | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override — รายละเอียดเต็มที่หัวข้อ 37) |
 
 ---
 
 **สถานะ ณ เอกสารนี้**: Architecture ได้รับการอนุมัติแล้วทั้งหมด (v1+v2+v3+v4+Permission Matrix) — การ implementation ยังไม่เริ่มใน GitHub repository จริง (repo ว่างอยู่) เอกสารนี้จัดทำขึ้นเพื่อเป็นจุดเริ่มต้นของการ implementation ใหม่ใน GitHub Codespaces
 
 **STOP** — เอกสารนี้เป็นการรวมเอกสาร Architecture เท่านั้น ไม่มีการเขียน Application Code เพิ่มเติม ไม่มีการเริ่ม Phase ใหม่ใดๆ ทั้งสิ้น
+
+---
+
+## 37. Platform Admin — Phase 9 Locked Blocker Decisions
+
+Phase 9 Planning Review (2026-08-17) พบว่า §18 ("Super Admin เข้าสู่ Support/View-as-Owner Mode ต้อง
+audit ทุกครั้ง"), §26 (threat checklist: "Super Admin support mode ไม่ audit"), §32 (Emergency Control
+list, System Health component list), และ §33 (Phase 9 deliverable line) สั่งให้มี capability เหล่านี้อยู่
+แล้ว แต่ไม่เคยมีเอกสารส่วนใดนิยาม**กลไกจริง**ไว้เลย — สามหัวข้อย่อยด้านล่างคือ Blocker Decision ที่ต้องล็อก
+ก่อนเริ่ม implement Phase 9 ตาม Development Workflow ของ CLAUDE.md ("พบ requirement ที่ไม่มี spec รองรับ
+ต้องหยุดและเสนอทางเลือกก่อน implement เสมอ"). ทั้งสามมติเป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด.
+
+### 37.1 Support Session Model (Blocker 1 — Option A, Locked)
+
+**ปัญหา**: Super Admin มี custom claim `{ superAdmin: true }` เท่านั้น (§6) — ไม่มี `merchantId`/`role`
+claim ใดๆ ที่ Authorization Service's `requirePermission`/`requireOwner` (§10) ต้องการ. ไม่มีเอกสารใดบอกว่า
+Super Admin ได้สิทธิ์เข้าถึงข้อมูลของ merchant หนึ่งๆ อย่างไรในทางเทคนิค.
+
+**มติ (Locked)**:
+- คอลเลกชันใหม่ `supportSessions/{sessionId}` — server-write-only, **deny-all client access ทั้ง
+  read/write ไม่มีข้อยกเว้น** (เทียบเท่าระดับความเข้มงวดของ `platformCustomers`/`customerIdentities`, §6).
+  Field: `superAdminUid`, `merchantId`, `reason`, `grantedAt`, `expiresAt`, `revokedAt`, `revokedBy`.
+- เปิด session ต้องเลือก merchant ที่มีอยู่จริง + ใส่เหตุผล (ห้ามว่าง) เสมอ — เขียน `auditLogs` ทันที
+  (`actorType: 'superAdmin'`, action `support_session.opened`).
+- Session หมดอายุอัตโนมัติ (TTL ค่าเริ่มต้น 30 นาที, สูงสุด 120 นาที — ตัวเลขนี้เป็นค่า default ที่ปรับได้
+  ในอนาคต ไม่ใช่ business rule ที่ล็อกตายตัว) และปิดได้ทันทีทุกเมื่อ (`support_session.closed`,
+  audit ทุกครั้ง) — revocation ตรวจจาก Firestore document โดยตรงทุก request (ไม่พึ่ง custom-claims token
+  refresh/propagation timing ใดๆ) จึงเป็น **deterministic**.
+- **ห้ามตั้งหรือปลอม Owner/Staff custom claims โดยเด็ดขาด** — ไม่มี code path ใดใน Support Session ที่
+  เรียก `auth.setCustomUserClaims()` หรือสร้าง `staffUsers` document ปลอมเพื่อหลอกให้ `onStaffUserWrite`
+  (§10) ตั้ง claims ให้ — Support Session ไม่ใช่ code path ที่สองของกลไกนั้นไม่ว่าทางใด.
+- ทุก action ที่เกิดขึ้นระหว่าง session ที่ active (การอ่านข้อมูล snapshot) ถูก audit ด้วย actorType
+  `superAdmin` จริง + `supportSessionId` เสมอ — ไม่ปนกับ actorType `staff` และไม่ทำให้ audit trail
+  เข้าใจผิดว่าเป็นการกระทำของ Owner/Staff จริงของ merchant นั้น.
+- **ขอบเขต V1 = read-only "View-as" เท่านั้น**: Support Session ใช้อ่าน snapshot ของ merchant ที่เลือกไว้
+  (merchant record, subscription, staff list, points ledger ล่าสุด, automations, notification log —
+  คือ collection ที่ deny-all กับทุกคนรวม Super Admin เอง เช่น `pointsLedger`/`automations`/
+  `notificationLog`, §5 rules) ผ่าน server-side query ที่ derive `merchantId` จาก session document เท่านั้น
+  (ไม่รับจาก client input ใดๆ). **Support Session ไม่ให้ Super Admin เขียน/แก้ไข business state แทน
+  Owner ใน V1 นี้** — ความสามารถเขียนแทน Owner (เช่น แก้ points/reward/coupon ให้ระหว่าง support)
+  เป็น scope เพิ่มเติมที่ยังไม่ได้ตัดสินใจ (จงใจเลือก least-privilege ตาม §26 แทนการเดา business rule ว่า
+  Super Admin ควรทำแทน Owner ได้แค่ไหน) — รอ approval แยกต่างหากถ้าต้องการในอนาคต. Merchant list/detail
+  พื้นฐาน (merchants/staffUsers/memberships/subscriptions) ไม่ต้องผ่าน Support Session เลย เพราะ
+  `firestore.rules` อนุญาต `isSuperAdmin()` อ่านตรงอยู่แล้วตั้งแต่ Phase 1 (§3, §10 rules).
+
+### 37.2 Emergency Control Service State (Blocker 2 — Option B, Locked)
+
+**ปัญหา**: §32 สั่งให้มี Emergency Control (`Suspend Staff`/`Suspend Merchant Operations`/
+`Freeze Points Engine`/`Disable Automation`/`Disable Broadcast`) ที่ "แยก Service State" จาก
+subscription/billing state แต่ไม่เคยนิยาม schema/ที่เก็บ/จุดบังคับใช้เลย.
+
+**มติ (Locked)**:
+- คอลเลกชันใหม่ `emergencyControls/{merchantId}` — server-write-only, **deny-all client access ทั้ง
+  read/write**. แยกจาก `subscriptions/{merchantId}` โดยสิ้นเชิง — §25's Single Source of Truth ยังคง
+  หมายถึงเฉพาะ billing state (`packageId`/`status`/`trialEndsAt`/`overrides`) เท่านั้น ไม่ถูกแก้ไข/ขยาย
+  ความหมายโดยมตินี้.
+- Toggle อิสระต่อกัน 4 ตัว: `staffSuspended`, `pointsEngineFrozen`, `automationDisabled`,
+  `broadcastDisabled` (บวก `updatedBy`/`updatedAt`/`reason` ต่อการเปลี่ยนแต่ละครั้ง) — ไม่มีเอกสารระบุ
+  "Suspend Merchant Operations" เป็น field แยก จึงตีความเป็นคำอธิบายรวมของทั้ง 4 toggle นี้ ไม่ใช่ toggle
+  ที่ 5.
+- เอกสารไม่มีอยู่ (merchant ไม่เคยถูก toggle) = ทุก capability ปกติ (false ทั้งหมด) — ไม่ปิดกั้นอะไรโดย
+  default.
+- **จุดบังคับใช้ (enforcement point) เดียวต่อ 1 capability เท่านั้น** เพื่อไม่ให้ retrofit กระจายไปทั่ว
+  codebase (สอดคล้อง §10 "ห้ามใส่ permission check กระจายตาม UI/route component"):
+  - `staffSuspended` → `requireStaffAuthContext()` (`src/lib/api/auth.ts`) — จุดเดียวที่ทุก
+    protected Staff/Owner API route เรียกอยู่แล้ว. Customer Portal ไม่ผ่านจุดนี้ จึงไม่ถูกกระทบ
+    (Customer portal ยังอ่านได้เสมอ ตรงกับหลักการ §25 Suspended Behavior).
+  - `pointsEngineFrozen` → `assertPointsEngineNotFrozenTx()` (`src/modules/emergency-control/service.ts`),
+    called explicitly as the FIRST read of the transaction by each of the six functions that
+    create a `pointsLedger` entry (earn/manual add/adjust/reverse in `points/ledger-service.ts`,
+    reward spend in `reward/service.ts`, automation's ADD_POINTS branch in
+    `promotion-automation/service.ts`) — one shared enforcement function, not one shared call
+    site: `createLedgerEntry()` itself CANNOT hold this check, because `reversePoints`' shortfall
+    entry calls it a second time *after* other writes already happened earlier in the same
+    transaction, and Firestore forbids any read once a transaction has issued a write. **รวมถึง
+    reversal/adjustment ด้วย โดยตั้งใจ** (freeze หมายถึงหยุดการเคลื่อนไหวแต้มทั้งหมดชั่วคราว ไม่ใช่แค่
+    earn ใหม่ — Super Admin ต้องปลด freeze ก่อนจึงจะบันทึก correction ใดๆ ได้). Automation's
+    ADD_POINTS branch catches this specific error and records a normal `FAILED` execution (same
+    pattern as its "invalid amount" validation) rather than letting it propagate — a frozen engine
+    is an expected business-state block, not the kind of infra error §17 rethrows an event for.
+  - `automationDisabled` → `executeAutomationAction()` (`src/modules/promotion-automation/service.ts`)
+    — จุดเดียวที่ทั้ง real-time dispatch และ scheduled batch เรียกผ่าน (§16 "Automation คือ Engine
+    เดียว").
+  - `broadcastDisabled` → `sendBroadcast()`/`sendTestBroadcast()` (`src/modules/notification/service.ts`)
+    เท่านั้น — ไม่กระทบ `sendNotification()` รายบุคคลที่ automation เรียก (คุมด้วย `automationDisabled`
+    แยกต่างหากอยู่แล้ว).
+- ทุกครั้งที่ Super Admin เปลี่ยน toggle ต้องระบุเหตุผล + เขียน `auditLogs`
+  (`actorType: 'superAdmin'`, action `emergency_control.<capability>.<enabled|disabled>`).
+
+### 37.3 Entitlement Limit Enforcement (Blocker 3 — Option A, Locked)
+
+**ปัญหา**: §25 นิยาม `memberLimit`/`staffLimit`/`branchLimit` และ Limit Behavior (80%/100%/hard-limit)
+แต่ไม่เคยนิยามว่า "จำนวนปัจจุบัน" มาจากไหน หรือเช็คที่จุดไหน.
+
+**มติ (Locked)**:
+- ใช้ live Firestore `count()` aggregate query ที่ scope ด้วย `merchantId` ที่มาจาก `AuthContext`
+  ที่ผ่านการ verify แล้วเท่านั้น (ไม่ใช่ client input) — **ไม่เพิ่ม denormalized counter field ใดๆ**
+  (ไม่มี `merchants.usageCounters` หรือเทียบเท่า).
+- เช็คนี้ต้องอยู่**ภายใน Firestore transaction เดียวกับ write ที่สร้าง resource ใหม่**เสมอ (`tx.get(...
+  .count())`, รองรับโดย `firebase-admin` SDK — ตรงกับหลักการเดิมของ Staff Limits, §9/§11: "ตรวจภายใน
+  transaction เดียวกับการเขียน ไม่ใช่ check-then-write แยก step") — ป้องกัน race condition ที่สอง
+  request พร้อมกันแซง hard limit ไปได้พร้อมกัน.
+- Hard limit บล็อกเฉพาะการสร้างใหม่ตรงตาม §25 เดิมทุกประการ (ไม่ลบ/ไม่กระทบ resource ที่มีอยู่แล้ว).
+  `limit === null` (unlimited/ไม่มี package) = ไม่บล็อก.
+- จุดที่ต้อง retrofit มีแค่ 3 จุด (ที่สร้าง resource ใหม่เท่านั้น): `createMembership()`
+  (`src/modules/membership/service.ts`, ตรวจ `memberLimit`), `createStaffUser()`
+  (`src/modules/staff/service.ts`, ตรวจ `staffLimit`), `createBranch()`
+  (`src/modules/merchant/service.ts`, ตรวจ `branchLimit`, ห่อด้วย transaction ใหม่เพราะเดิมไม่มี).
+- `staffLimit` นับเฉพาะ `staffUsers` ที่มี role `MANAGER`/`STAFF` ของ merchant นั้น (คือ document ที่
+  สร้างผ่าน `createStaffUser` เท่านั้น) — **ไม่นับ Owner** ซึ่งสร้างผ่าน `createMerchantWithOwner` คนละ
+  bootstrap path ตั้งแต่ก่อน package ใดๆ จะถูกกำหนด — เป็นการตีความที่สมเหตุสมผลที่สุดเมื่อไม่มี spec
+  ระบุไว้ชัดเจน (นับเฉพาะ "พนักงานที่เพิ่มเข้ามา" ตรงกับชื่อ field `staffLimit` และตรงกับ collection ที่
+  ฟังก์ชันนี้เขียนจริง) ไม่ใช่การเดา business rule ที่ไม่มีฐาน.
+
+---

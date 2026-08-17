@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
+import { assertBroadcastNotDisabled } from "@/modules/emergency-control/service";
 import { writeEvent } from "@/modules/event/service";
 import { LineAdapter } from "@/modules/notification/adapters/line-adapter";
 import type { ChannelAdapter } from "@/modules/notification/adapters/channel-adapter";
@@ -139,6 +140,7 @@ export async function sendNotification(params: {
  */
 export async function sendTestBroadcast(ctx: AuthContext, body: string, adapter: ChannelAdapter = new LineAdapter()): Promise<void> {
   requirePermission(ctx, PERMISSIONS.BROADCAST_SEND, ctx.merchantId);
+  await assertBroadcastNotDisabled(ctx.merchantId); // Emergency Control §37.2
   const settings = await settingsRef(ctx.merchantId).get();
   const testRecipient = (settings.data() as NotificationSettings | undefined)?.testRecipientLineUserId;
   if (!testRecipient) {
@@ -168,6 +170,7 @@ export async function sendBroadcast(
   adapter: ChannelAdapter = new LineAdapter(),
 ): Promise<BroadcastResult> {
   requirePermission(ctx, PERMISSIONS.BROADCAST_SEND, ctx.merchantId);
+  await assertBroadcastNotDisabled(ctx.merchantId); // Emergency Control §37.2
 
   const settings = await settingsRef(ctx.merchantId).get();
   const template = (settings.data() as NotificationSettings | undefined)?.templates?.[input.templateType];

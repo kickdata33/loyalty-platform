@@ -182,6 +182,26 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Phase 9 — Platform Admin (§37, §26). `supportSessions`/`emergencyControls` are 100%
+    // deny-all client access, no exceptions, not even Super Admin through the normal client SDK —
+    // same tier as `platformCustomers`/`customerIdentities` (§6): opening/closing/reading a
+    // Support Session and toggling an Emergency Control both go through server-side service
+    // functions only (`@/modules/support-session/service`, `@/modules/emergency-control/service`),
+    // never a direct client read/write, so every use is guaranteed to be audited (§18, §37.1,
+    // §37.2) — a direct client read path would bypass that guarantee entirely.
+    match /supportSessions/{sessionId} {
+      allow read, write: if false;
+    }
+    match /emergencyControls/{merchantId} {
+      allow read, write: if false;
+    }
+    // systemHealth — Super-Admin-only read (same pattern as merchants/subscriptions, §3); written
+    // only by the scheduled self-check Cloud Function (Admin SDK, bypasses these rules).
+    match /systemHealth/{component} {
+      allow read: if isSuperAdmin();
+      allow write: if false;
+    }
+
     // Everything else stays denied by Firestore's own default (no matching rule = no access) —
     // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
     // collections that actually exist; add a new explicit match block, not a broad wildcard, when

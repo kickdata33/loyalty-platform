@@ -1,5 +1,6 @@
 import { FieldValue, Timestamp, type Transaction } from "firebase-admin/firestore";
 
+import { assertPointsEngineNotFrozenTx } from "@/modules/emergency-control/service";
 import { writeEvent } from "@/modules/event/service";
 import { loadMembershipForMerchantTx } from "@/modules/membership/service";
 import { evaluatePointRules } from "@/modules/points/rule-engine";
@@ -295,22 +296,38 @@ function newLedgerRef(): FirebaseFirestore.DocumentReference {
   return db().collection(COLLECTIONS.pointsLedger).doc();
 }
 
-function createLedgerEntry(
+/**
+ * The single low-level primitive every points-ledger-creating write in the codebase funnels
+ * through, directly or via `writeLedgerEntry` below.
+ *
+ * NOTE on Emergency Control's `pointsEngineFrozen` check (§37.2): it does NOT live here, on
+ * purpose — `reversePoints` below calls `writeLedgerEntry` a SECOND time (the shortfall
+ * ADJUSTMENT entry) after other writes (`tx.update(originalRef, ...)`, a lot's
+ * `remainingAmount`) have already happened earlier in the same transaction, and Firestore
+ * forbids any `tx.get()` read once a transaction has issued a write. A check embedded here would
+ * work for every call site except that second one. Each of the six functions that ultimately
+ * create a ledger entry (`earnPointsByRule`, `addManualPoints`, `adjustPoints`, `reversePoints`,
+ * `redeemReward` in `reward/service.ts`, and the automation executor's ADD_POINTS branch) instead
+ * calls `assertPointsEngineNotFrozenTx` explicitly as the FIRST read of its own transaction —
+ * still one shared enforcement function (no duplicated logic), just not one shared call site.
+ * Kept async regardless, matching every other write helper in this file.
+ */
+async function createLedgerEntry(
   tx: Transaction,
   ref: FirebaseFirestore.DocumentReference,
   params: LedgerEntryParams,
-): void {
+): Promise<void> {
   tx.create(ref, { ...params, createdAt: FieldValue.serverTimestamp() });
 }
 
 /** Convenience wrapper for call sites with no reads left to run afterward (no risk of a
  * read-after-write ordering violation) — generates the ref and writes in one step. */
-export function writeLedgerEntry(
+export async function writeLedgerEntry(
   tx: Transaction,
   params: LedgerEntryParams,
-): FirebaseFirestore.DocumentReference {
+): Promise<FirebaseFirestore.DocumentReference> {
   const ref = newLedgerRef();
-  createLedgerEntry(tx, ref, params);
+  await createLedgerEntry(tx, ref, params);
   return ref;
 }
 
@@ -421,6 +438,7 @@ export async function earnPointsByRule(ctx: AuthContext, input: EarnPointsByRule
   }
 
   return db().runTransaction(async (tx) => {
+    await assertPointsEngineNotFrozenTx(tx, ctx.merchantId); // Emergency Control §37.2 — first read
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.earn", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing, delta: finalPoints, appliedRules };
 
@@ -435,7 +453,7 @@ export async function earnPointsByRule(ctx: AuthContext, input: EarnPointsByRule
       false,
     );
 
-    const ledgerRef = writeLedgerEntry(tx, {
+    const ledgerRef = await writeLedgerEntry(tx, {
       merchantId: ctx.merchantId,
       membershipId: input.membershipId,
       branchId: input.branchId,
@@ -511,6 +529,7 @@ export async function addManualPoints(ctx: AuthContext, input: ManualAddPointsIn
   const now = new Date();
 
   return db().runTransaction(async (tx) => {
+    await assertPointsEngineNotFrozenTx(tx, ctx.merchantId); // Emergency Control §37.2 — first read
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.manual_add", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing, delta: input.amount, appliedRules: [] };
 
@@ -525,7 +544,7 @@ export async function addManualPoints(ctx: AuthContext, input: ManualAddPointsIn
       true,
     );
 
-    const ledgerRef = writeLedgerEntry(tx, {
+    const ledgerRef = await writeLedgerEntry(tx, {
       merchantId: ctx.merchantId,
       membershipId: input.membershipId,
       branchId: input.branchId,
@@ -588,6 +607,7 @@ export async function adjustPoints(ctx: AuthContext, input: AdjustPointsInput): 
   const now = new Date();
 
   return db().runTransaction(async (tx) => {
+    await assertPointsEngineNotFrozenTx(tx, ctx.merchantId); // Emergency Control §37.2 — first read
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.adjust", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing };
 
@@ -604,7 +624,7 @@ export async function adjustPoints(ctx: AuthContext, input: AdjustPointsInput): 
         ? await planFifoConsumption(tx, ctx.merchantId, input.membershipId, -input.delta)
         : null;
 
-    createLedgerEntry(tx, ledgerRef, {
+    await createLedgerEntry(tx, ledgerRef, {
       merchantId: ctx.merchantId,
       membershipId: input.membershipId,
       branchId: null,
@@ -670,6 +690,7 @@ export async function reversePoints(ctx: AuthContext, input: ReversePointsInput)
   const now = new Date();
 
   return db().runTransaction(async (tx) => {
+    await assertPointsEngineNotFrozenTx(tx, ctx.merchantId); // Emergency Control §37.2 — first read
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "points.reverse", input.idempotencyKey);
     if (existing) return { ledgerEntryId: existing };
 
@@ -713,7 +734,7 @@ export async function reversePoints(ctx: AuthContext, input: ReversePointsInput)
           ).docs[0]
         : undefined;
 
-    const reversalRef = writeLedgerEntry(tx, {
+    const reversalRef = await writeLedgerEntry(tx, {
       merchantId: ctx.merchantId,
       membershipId: original.membershipId,
       branchId: null,
@@ -756,7 +777,7 @@ export async function reversePoints(ctx: AuthContext, input: ReversePointsInput)
         // of their remaining active lots here (a "debt" from having spent since-reversed points) is
         // the intended, historically-accurate outcome, not a bug to paper over by draining a
         // different lot to make the numbers match.
-        writeLedgerEntry(tx, {
+        await writeLedgerEntry(tx, {
           merchantId: ctx.merchantId,
           membershipId: original.membershipId,
           branchId: null,

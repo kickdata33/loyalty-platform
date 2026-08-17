@@ -61,3 +61,16 @@ export class ConflictError extends AppError {
     super(message, "CONFLICT");
   }
 }
+
+/**
+ * A capability has been disabled by Super Admin Emergency Control
+ * (FINAL-ARCHITECTURE.md §37.2, `@/modules/emergency-control/service`). Kept distinct from
+ * `AuthorizationError` — this is not "you lack a role/permission", it's "this action is
+ * temporarily unavailable for this merchant" — so API routes/UI can show a different message and
+ * tests can assert on it specifically.
+ */
+export class ServiceSuspendedError extends AppError {
+  constructor(message: string) {
+    super(message, "SERVICE_SUSPENDED");
+  }
+}

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { setMerchantSubscription } from "@/modules/billing-entitlement/service";
 import { createMembership } from "@/modules/membership/service";
 import { createBranch } from "@/modules/merchant/service";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import { createStaffUser, suspendStaffUser } from "@/modules/staff/service";
 
-import { addStaffFixture, createMerchantFixture, createTestAuthUser } from "./setup";
+import { addStaffFixture, createMerchantFixture, createSuperAdminFixture, createTestAuthUser } from "./setup";
 
 /**
  * Audit integrity (FINAL-ARCHITECTURE.md §18): every business-sensitive write in this module set
@@ -33,6 +34,12 @@ describe("Audit trail for Phase 1 sensitive operations (emulator)", () => {
 
   it("records branch.created", async () => {
     const { ownerCtx, merchantId } = await createMerchantFixture();
+    // Entitlement Limit Enforcement (§37.3, Phase 9, Locked) — the default trial branchLimit is 1
+    // and `createMerchantWithOwner` already creates one default branch, so a second branch needs
+    // an explicit override to exercise this test's own actual subject (audit logging), same as
+    // any real merchant would need to upgrade first.
+    const admin = await createSuperAdminFixture();
+    await setMerchantSubscription(admin.ctx, merchantId, { overrides: { branchLimit: 2 }, reason: "test fixture" });
     await createBranch(ownerCtx, { merchantId, name: "สาขา 2", address: "" });
     const entries = await auditEntriesFor(merchantId, "branch.created");
     expect(entries).toHaveLength(1);

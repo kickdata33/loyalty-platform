@@ -1,6 +1,7 @@
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
+import { assertPointsEngineNotFrozenTx } from "@/modules/emergency-control/service";
 import { writeEvent } from "@/modules/event/service";
 import { getMembership, loadMembershipForMerchantTx } from "@/modules/membership/service";
 import type { MembershipRecord } from "@/modules/membership/types";
@@ -264,6 +265,7 @@ export async function redeemReward(ctx: AuthContext, input: RedeemRewardInput): 
 
   const { voucherId, isReplay } = await db.runTransaction(async (tx) => {
     // ---- READS (every one of them, before any write below) ----
+    await assertPointsEngineNotFrozenTx(tx, ctx.merchantId); // Emergency Control §37.2 — first read
     const existing = await checkIdempotencyKey(tx, ctx.merchantId, "reward.redeem", input.idempotencyKey);
     if (existing) return { voucherId: existing, isReplay: true };
 
@@ -305,7 +307,7 @@ export async function redeemReward(ctx: AuthContext, input: RedeemRewardInput): 
     // ---- WRITES (all of them, after every read above) ----
     const voucherRef = db.collection(COLLECTIONS.voucherInstances).doc();
 
-    const ledgerRef = writeLedgerEntry(tx, {
+    const ledgerRef = await writeLedgerEntry(tx, {
       merchantId: ctx.merchantId,
       membershipId: input.membershipId,
       branchId: input.branchId,

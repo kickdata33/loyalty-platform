@@ -18,6 +18,14 @@
       ]
     },
     {
+      "collectionGroup": "notificationLog",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "automations",
       "queryScope": "COLLECTION",
       "fields": [

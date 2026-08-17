@@ -7,6 +7,7 @@ import {
   verifyWebhookSignature,
   type LineProvisioningClient,
 } from "@/modules/line-channel/service";
+import { getMerchantRecordOrThrow } from "@/modules/merchant/service";
 import { AuthorizationError } from "@/modules/shared/errors";
 import { InMemorySecretStore, setSecretStoreForTesting } from "@/modules/shared/secret-store";
 
@@ -80,6 +81,27 @@ describe("connectLineChannel — RBAC + tenant isolation + secret handling", () 
 
     const statusB = await getLineChannelStatus(merchantB.ownerCtx);
     expect(statusB).toBeNull(); // merchant B has its own (empty) config, never merchant A's
+  });
+
+  it("regression: the LIFF endpoint URL registered with LINE uses the merchant's SLUG, never its raw document id (pre-staging fix)", async () => {
+    // `/m/[merchantSlug]/page.tsx` resolves a merchant ONLY via `getPublicMerchantProfileBySlug`
+    // (a `slug` lookup) — registering `merchantId` here would 404 for every real customer, since a
+    // merchant's self-chosen slug is never equal to its Firestore auto-generated document id.
+    const { ownerCtx, merchantId } = await createMerchantFixture();
+    const merchantSlug = (await getMerchantRecordOrThrow(merchantId)).slug;
+    let capturedEndpointUrl: string | undefined;
+    const capturingClient: LineProvisioningClient = {
+      ...fakeClient,
+      createLiffApp: async (_token, endpointUrl) => {
+        capturedEndpointUrl = endpointUrl;
+        return "captured-liff-id";
+      },
+    };
+
+    await connectLineChannel(ownerCtx, validInput, "https://example.test", capturingClient);
+
+    expect(capturedEndpointUrl).toBe(`https://example.test/m/${merchantSlug}`);
+    expect(capturedEndpointUrl).not.toContain(merchantId);
   });
 });
 

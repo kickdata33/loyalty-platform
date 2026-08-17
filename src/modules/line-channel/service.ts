@@ -6,6 +6,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
 import type { LineChannelConfig } from "@/modules/line-channel/types";
+import { getMerchantRecordOrThrow } from "@/modules/merchant/service";
 import { requireOwner } from "@/modules/rbac/authorization-service";
 import { NotFoundError, ValidationError } from "@/modules/shared/errors";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
@@ -119,9 +120,16 @@ export async function connectLineChannel(
   );
   const loginSecretRef = await secretStore.putSecret(`line-login-secret-${ctx.merchantId}`, input.loginChannelSecret);
 
+  // Bug fix (pre-staging-deployment review): the LIFF endpoint URL must point at the merchant's
+  // `slug`, not its raw Firestore document id — `/m/[merchantSlug]/page.tsx` resolves the
+  // merchant ONLY via `getPublicMerchantProfileBySlug` (a `slug` lookup). Registering
+  // `ctx.merchantId` here would make the LIFF app LINE provisions 404 for every real customer,
+  // since a merchant's self-chosen slug never equals its auto-generated document id.
+  const merchant = await getMerchantRecordOrThrow(ctx.merchantId);
+
   // Self-issue a Login channel token now (verified working, §35 spike) to provision the LIFF app.
   const loginToken = await client.issueLoginToken(input.loginChannelId, input.loginChannelSecret);
-  const liffId = await client.createLiffApp(loginToken, `${webhookBaseUrl}/m/${ctx.merchantId}`);
+  const liffId = await client.createLiffApp(loginToken, `${webhookBaseUrl}/m/${merchant.slug}`);
   await client.setWebhookEndpoint(input.messagingChannelAccessToken, `${webhookBaseUrl}/api/webhooks/line`);
   const botUserId = await client.getBotUserId(input.messagingChannelAccessToken);
 

@@ -70,6 +70,15 @@ export interface ReportSettings {
   monthlyItems: MonthlyReportItem[];
 }
 
+/** `merchants/{merchantId}.broadcastLimits` — §26 "Broadcast spam / message flooding (rate limit
+ * ต่อ merchant)", §38.1 (Phase 10, Locked). Config-driven, never hard-coded (§34), same governance
+ * pattern as `staffLimits` — seeded with a conservative default at merchant creation. Like
+ * `staffLimits`, there is no Owner-facing edit UI/API for this field in V1 (matching that exact
+ * precedent, not a new gap). */
+export interface BroadcastLimits {
+  maxBroadcastsPerDay: number;
+}
+
 export interface MerchantRecord {
   id: string;
   name: string;
@@ -82,6 +91,7 @@ export interface MerchantRecord {
   segmentRulesConfig: SegmentRulesConfig;
   pointsExpirationPolicy: PointsExpirationPolicy;
   reportSettings: ReportSettings;
+  broadcastLimits: BroadcastLimits;
   ownerUserId: string;
   createdAt: Timestamp;
 }

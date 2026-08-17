@@ -49,3 +49,17 @@ export type BroadcastAudience =
   | "INACTIVE"
   | "VIP"
   | { pointsGte: number };
+
+/** `broadcasts/{broadcastId}` — §26 "Broadcast spam / message flooding", §38.1 (Phase 10,
+ * Locked). One document per `sendBroadcast()` call — distinct from the per-recipient
+ * `notificationLog` above, and is the rate-limit source of truth (a `count()` aggregate over
+ * this collection, not `notificationLog`, since Firestore has no "count distinct broadcastId"
+ * aggregation). Also doubles as a genuine "broadcast history" list. */
+export interface BroadcastRecord {
+  merchantId: string;
+  templateType: NotificationTemplateType;
+  audience: BroadcastAudience;
+  sentAt: Timestamp;
+  sentCount: number;
+  failedCount: number;
+}

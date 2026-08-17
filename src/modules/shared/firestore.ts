@@ -59,6 +59,10 @@ export const COLLECTIONS = {
   supportSessions: "supportSessions",
   emergencyControls: "emergencyControls",
   systemHealth: "systemHealth",
+  // Phase 10 — Hardening (§38)
+  broadcasts: "broadcasts",
+  platformOpsSettings: "platformOpsSettings",
+  criticalErrors: "criticalErrors",
 } as const;
 
 /** Sub-collection path helper: `merchants/{merchantId}/branches`. */

@@ -1728,7 +1728,9 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 | Phase 7 Messaging API Access Token Decision | เพิ่มหัวข้อ 19 "Messaging API Channel Access Token — Phase 7 V1 Architecture Decision" + note บน Step 4/5a ของหัวข้อ 20: §35-mandated spike ต่อบัญชี LINE Developer จริง (Provider เชื่อมกับ Shop_member OA @406plisw) ยืนยันว่า `client_credentials` token issuance ใช้ได้จริงกับ LINE Login channel แต่ล้มเหลวซ้ำหลายครั้งกับ Messaging API channel ของบัญชีทดสอบนี้ (ลองทั้ง `/oauth2/v3/token`, legacy `/v2/oauth/accessToken`, และ Channel Secret ที่ reissue ใหม่หลายรอบ) แม้เอกสารเดิมหัวข้อ 19 จะระบุว่า platform ออก token เองทั้งสอง channel ผ่าน `client_credentials` ได้; มติล็อกว่า Phase 7 V1 ใช้ **Console-issued long-lived Channel Access Token** ของ Messaging API channel แทน (Owner คัดลอกมาครั้งเดียวในขั้นตอนเชื่อมต่อ) เก็บผ่าน Secret Manager reference เดียวกับ `lineChannelConfigs.messagingChannel.accessTokenRef` ที่มีอยู่แล้ว (ไม่เพิ่ม field ใหม่), ตัวแปร credential ที่ `LineAdapter` ใช้คือ `LINE_MESSAGING_CHANNEL_ACCESS_TOKEN`, ห้าม hardcode/log/expose ค่านี้ที่ใดก็ตาม — LINE Login channel ไม่กระทบ ยังคง self-issue ผ่าน `client_credentials` ตามเดิม — self-issued token สำหรับ Messaging API channel เป็น explicitly deferred item รอ revisit ในอนาคต — เหตุผล: ข้อจำกัดที่พิสูจน์แล้วจริงของ channel/account configuration นี้ผ่านการทดสอบหลายรอบ ไม่ใช่การเดา ไม่ใช่ bug ของ implementation — เป็นการเติมช่องว่าง ไม่ override หลักการ Secret Manager reference/ห้ามเก็บ secret ใน client-accessible document ที่มีอยู่เดิม ไม่เปลี่ยน `lineChannelConfigs` schema | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 8 Activity Stats Maintenance Decision | เพิ่มหัวข้อ 15 "Activity Stats Maintenance — Phase 8 Architecture Decision": Phase 8 Planning Review พบว่า `membership.activityStats.{lastVisitAt, firstVisitAt, visitCount30d, visitCount90d}` (ประกาศไว้แล้วที่หัวข้อ 5/7/15) ไม่เคยมี code path ใดเขียนค่าเหล่านี้ตั้งแต่ Phase 3 นอกจากค่าเริ่มต้นตอนสร้าง Membership ทำให้ `segment` recalculation ของ `dailyAutomationBatch` (Phase 6) เป็น no-op ถาวรในทางปฏิบัติ (Blocker ต่อ Phase 8 Reports' segment-based KPI); มติล็อกว่า `recordVisit()` ต้องตั้ง `firstVisitAt` (ครั้งแรกที่ยังเป็น null เท่านั้น) และ `lastVisitAt` (ทุกครั้ง) ภายใน transaction เดียวกับการเขียน `visits/{visitId}` เมื่อ `countsAsVisit=true`, ส่วน `visitCount30d`/`visitCount90d` เป็น rolling window ที่ต้องคำนวณใหม่ทุกวันโดย `dailyAutomationBatch` เดียวกับที่คำนวณ `segment` อยู่แล้ว (ไม่สร้าง batch job แยก) โดย query `visits` ด้วย composite index ที่มีอยู่แล้ว (หัวข้อ 28) — ห้าม implement เป็น counter สะสมไม่มีวันลด และห้ามเปลี่ยนเป็นคำนวณสดอย่างเดียว (จะทำให้ Automation Engine's `evaluateConditions()` ที่มีอยู่แล้วตั้งแต่ Phase 6 อ่านค่าไม่ได้) — เหตุผล: เติมช่องว่าง "ใครเขียนค่า เมื่อไหร่" ที่เอกสารเดิมไม่เคยระบุ ไม่เปลี่ยน field name/type/พฤติกรรม `segment` recalculation ที่มีอยู่แล้ว เป็นการเติมช่องว่าง ไม่ override ข้อความใดที่มีอยู่เดิม | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 8 Reports Decisions | เพิ่มหัวข้อ 24 สามส่วน: (1) "Report Settings Schema Location" — ล็อกว่า `reportSettings` ที่เอกสารเดิมพูดถึงในรูปประโยค ("ตาม merchant.reportSettings") แต่ไม่เคยปรากฏในตาราง schema ของหัวข้อ 5 เป็น field แบบ embedded บน `merchants/{merchantId}` (ตรงกับ pattern `staffLimits{}`/`segmentRulesConfig{}` เดิม) พร้อม field list `{ dailyEnabled, weeklyEnabled, monthlyEnabled, dailyItems[], weeklyItems[], monthlyItems[] }` ที่ item ต้องตรงกับรายการที่หัวข้อ 24 ระบุไว้แล้วเท่านั้น (2) "Report Delivery Channel Scope" — เอกสารเดิมระบุช่องทาง "Dashboard, LINE, Email (future)" โดยไม่เคยตรวจสอบว่า LINE เป็นไปได้จริงสำหรับผู้รับ Owner/Staff ซึ่งติด block เดียวกับ Phase 7 NOTIFY_OWNER Decision ที่ล็อกไว้แล้วว่าห้าม implement Owner/Staff LINE identity resolution; มติล็อกว่า Phase 8 V1 ส่งมอบเฉพาะ Dashboard delivery, `deliveredChannels[]` เก็บได้แค่ `'DASHBOARD'`, ห้ามนำ `notificationSettings.testRecipientLineUserId` มาใช้ซ้ำสำหรับ Report, LINE delivery ยังไม่มีกำหนดเวลาเช่นเดียวกับ NOTIFY_OWNER (3) "Report Period Boundaries — Merchant-Local Timezone" — ล็อกว่า `periodStart`/`periodEnd` ของ Report และ document id ของ `merchantDailyStats/{merchantId_date}` ต้องคำนวณจาก `merchants/{merchantId}.timezone` ของแต่ละร้านเองผ่าน `Intl.DateTimeFormat` ของ Node runtime (ไม่เพิ่ม dependency ใหม่) ไม่ใช่ UTC-day boundary แบบ internal key ของ `dailyAutomationBatch` (Phase 6, ซึ่งไม่เปลี่ยนแปลงจากมตินี้) เพราะ Report period เป็นข้อมูลที่ Owner อ่านตรงๆ — เหตุผลทั้งสามข้อ: เติมช่องว่างที่เอกสารเดิมไม่เคยระบุ สอดคล้องกับหลักการเดิมของหัวข้อ 0/9/23 (timezone-aware, ห้ามเดา business rule, ห้าม implement Owner/Staff LINE identity) ไม่ override/ลบ field หรือ enum ใดที่มีอยู่เดิม | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
-| Phase 9 Platform Admin Decisions (Blockers 1-3) | เพิ่มหัวข้อ 37 "Platform Admin — Phase 9 Locked Blocker Decisions" สามเรื่อง หลัง Phase 9 Planning Review พบว่า §18/§26/§32/§33 สั่งให้มี Support/View-as-Owner Mode, Emergency Control, และการบังคับ Package hard limit โดยไม่เคยนิยามกลไกจริงไว้เลย: (1) "Support Session Model" — ล็อกว่า Super Admin (custom claim `{superAdmin:true}`, ไม่มี merchantId claim) เข้าถึงข้อมูลระดับ merchant ผ่าน `supportSessions/{sessionId}` (server-write-only, deny-all client) ที่ต้องเลือก merchant + ระบุเหตุผลก่อนเปิด, หมดอายุอัตโนมัติ, ปิดได้ทันที (deterministic revocation) — **ไม่มีการตั้ง/ปลอม Owner custom claims ใดๆ ทั้งสิ้น** (ไม่ใช่ code path ที่สองของ §10's onStaffUserWrite), ทุก request ที่เกิดขึ้นระหว่าง session ถูก audit ด้วย actorType `superAdmin` + `supportSessionId` จริงเสมอ ไม่ปนกับ actorType `staff`; ขอบเขต V1 คือ **read-only "View-as" เท่านั้น** (อ่านข้อมูล deny-all-ทุกคน เช่น pointsLedger/automations/notificationLog ของ merchant ที่เลือกไว้ผ่าน session) — Support Session **ไม่ใช่ทางผ่านสำหรับ Super Admin เขียน/แก้ business state แทน Owner** ใน V1 นี้ (ความสามารถเขียนแทน Owner ยังเป็น open decision รอ approval แยกในอนาคต หากต้องการ) (2) "Emergency Control Service State" — ล็อกว่าใช้ collection ใหม่ `emergencyControls/{merchantId}` (server-write-only, deny-all client ทั้ง read/write) แยกจาก `subscriptions/{merchantId}` โดยสิ้นเชิง (§25's Single Source of Truth ยังคงหมายถึง billing state เท่านั้น ไม่ปนกับ ops/incident-response state ใหม่นี้) มี toggle รายตัวอิสระต่อกัน `staffSuspended`/`pointsEngineFrozen`/`automationDisabled`/`broadcastDisabled` บังคับใช้ผ่าน enforcement helper เดียวที่จุดเดียวต่อ 1 ความสามารถ (`requireStaffAuthContext` สำหรับ staffSuspended, `createLedgerEntry` สำหรับ pointsEngineFrozen — ครอบคลุมทุก entry/spend ของแต้มรวมถึง reversal/automation ADD_POINTS, `executeAutomationAction` สำหรับ automationDisabled, `sendBroadcast`/`sendTestBroadcast` สำหรับ broadcastDisabled) ทุกครั้งที่ Super Admin เปลี่ยน toggle ต้องมี reason + audit log (3) "Entitlement Limit Enforcement" — ล็อกว่าบังคับ `memberLimit`/`staffLimit`/`branchLimit` ด้วย live Firestore `count()` aggregation query ที่ scope ด้วย server-derived merchantId เสมอ อ่านภายใน Firestore transaction เดียวกับ write ที่สร้าง resource ใหม่ (ไม่ check-then-write แยก step, ไม่เก็บ denormalized counter ใหม่) จุดที่ต้อง retrofit คือ `createMembership`/`createStaffUser`/`createBranch` เท่านั้น (`staffLimit` นับเฉพาะ StaffUser ที่สร้างผ่าน `createStaffUser` คือ role MANAGER/STAFF ไม่รวม Owner ซึ่งสร้างผ่าน `createMerchantWithOwner` คนละ path) — ทั้งสามมติเป็นการเติมช่องว่างที่ไม่เคยมี mechanism รองรับมาก่อน ไม่ override ข้อความเดิมข้อใดใน §18/§25/§26/§32/§33 ไม่เปลี่ยน Permission Matrix V1 ไม่เพิ่ม role ใหม่ ไม่เปิด custom claims code path ที่สอง | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override — รายละเอียดเต็มที่หัวข้อ 37) |
+| Phase 9 Platform Admin Decisions (Blockers 1-3) | เพิ่มหัวข้อ 37 "Platform Admin — Phase 9 Locked Blocker Decisions" สามเรื่อง หลัง Phase 9 Planning Review พบว่า §18/§26/§30/§33 สั่งให้มี Support/View-as-Owner Mode, Emergency Control, และการบังคับ Package hard limit โดยไม่เคยนิยามกลไกจริงไว้เลย: (1) "Support Session Model" — ล็อกว่า Super Admin (custom claim `{superAdmin:true}`, ไม่มี merchantId claim) เข้าถึงข้อมูลระดับ merchant ผ่าน `supportSessions/{sessionId}` (server-write-only, deny-all client) ที่ต้องเลือก merchant + ระบุเหตุผลก่อนเปิด, หมดอายุอัตโนมัติ, ปิดได้ทันที (deterministic revocation) — **ไม่มีการตั้ง/ปลอม Owner custom claims ใดๆ ทั้งสิ้น** (ไม่ใช่ code path ที่สองของ §10's onStaffUserWrite), ทุก request ที่เกิดขึ้นระหว่าง session ถูก audit ด้วย actorType `superAdmin` + `supportSessionId` จริงเสมอ ไม่ปนกับ actorType `staff`; ขอบเขต V1 คือ **read-only "View-as" เท่านั้น** (อ่านข้อมูล deny-all-ทุกคน เช่น pointsLedger/automations/notificationLog ของ merchant ที่เลือกไว้ผ่าน session) — Support Session **ไม่ใช่ทางผ่านสำหรับ Super Admin เขียน/แก้ business state แทน Owner** ใน V1 นี้ (ความสามารถเขียนแทน Owner ยังเป็น open decision รอ approval แยกในอนาคต หากต้องการ) (2) "Emergency Control Service State" — ล็อกว่าใช้ collection ใหม่ `emergencyControls/{merchantId}` (server-write-only, deny-all client ทั้ง read/write) แยกจาก `subscriptions/{merchantId}` โดยสิ้นเชิง (§25's Single Source of Truth ยังคงหมายถึง billing state เท่านั้น ไม่ปนกับ ops/incident-response state ใหม่นี้) มี toggle รายตัวอิสระต่อกัน `staffSuspended`/`pointsEngineFrozen`/`automationDisabled`/`broadcastDisabled` บังคับใช้ผ่าน enforcement helper เดียวที่จุดเดียวต่อ 1 ความสามารถ (`requireStaffAuthContext` สำหรับ staffSuspended, `createLedgerEntry` สำหรับ pointsEngineFrozen — ครอบคลุมทุก entry/spend ของแต้มรวมถึง reversal/automation ADD_POINTS, `executeAutomationAction` สำหรับ automationDisabled, `sendBroadcast`/`sendTestBroadcast` สำหรับ broadcastDisabled) ทุกครั้งที่ Super Admin เปลี่ยน toggle ต้องมี reason + audit log (3) "Entitlement Limit Enforcement" — ล็อกว่าบังคับ `memberLimit`/`staffLimit`/`branchLimit` ด้วย live Firestore `count()` aggregation query ที่ scope ด้วย server-derived merchantId เสมอ อ่านภายใน Firestore transaction เดียวกับ write ที่สร้าง resource ใหม่ (ไม่ check-then-write แยก step, ไม่เก็บ denormalized counter ใหม่) จุดที่ต้อง retrofit คือ `createMembership`/`createStaffUser`/`createBranch` เท่านั้น (`staffLimit` นับเฉพาะ StaffUser ที่สร้างผ่าน `createStaffUser` คือ role MANAGER/STAFF ไม่รวม Owner ซึ่งสร้างผ่าน `createMerchantWithOwner` คนละ path) — ทั้งสามมติเป็นการเติมช่องว่างที่ไม่เคยมี mechanism รองรับมาก่อน ไม่ override ข้อความเดิมข้อใดใน §18/§25/§26/§30/§33 ไม่เปลี่ยน Permission Matrix V1 ไม่เพิ่ม role ใหม่ ไม่เปิด custom claims code path ที่สอง | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override — รายละเอียดเต็มที่หัวข้อ 37) |
+| Phase 10 Hardening Decisions (Blockers 1-3 + Reconciliation gap) | เพิ่มหัวข้อ 38 "Platform Hardening — Phase 10 Locked Blocker Decisions" สี่เรื่อง หลัง Phase 10 Planning Review: (1) "Broadcast Rate Limiting" — §26's checklist item "Broadcast spam / message flooding (rate limit ต่อ merchant)" ไม่เคย implement มาก่อนทุก Phase; มติล็อกว่าใช้ collection ใหม่ `broadcasts/{broadcastId}` (metadata ต่อการส่งหนึ่งครั้ง แยกจาก per-recipient `notificationLog` เดิม) + field ใหม่ `merchants/{id}.broadcastLimits.maxBroadcastsPerDay` (Owner-configurable, self-service, pattern เดียวกับ `staffLimits`, default เริ่มต้นที่ implement time ไม่ใช่ business rule ตายตัว) บังคับผ่าน reserve-then-send: `sendBroadcast` นับ `broadcasts` ของ merchant ในช่วง 24 ชม.ล่าสุดและสร้าง doc ใหม่ **ภายใน transaction เดียวกัน** ก่อนเริ่ม loop ส่งจริง (ตรงกับหลักการเดิมของ §37.3) — `sendTestBroadcast` ไม่ถูกจำกัด (ส่งครั้งเดียวหา test recipient เดียว) — เป็นคนละกลไกจาก Emergency Control's `broadcastDisabled` (Phase 9, hard kill switch) ทั้งสองอยู่ร่วมกันได้ไม่ขัดแย้ง (2) "Monitoring & Critical Alert Path" — §30 สั่งให้เชื่อม error reporting กับ alert (email/LINE) แยก critical tier สำหรับ business-state error แต่ไม่เคยระบุ recipient หรือขอบเขต implementation; มติล็อกว่าทำสองครึ่ง: (ก) GCP-native Cloud Monitoring Alerting Policy สำหรับ error-rate/scheduled-job-failure ทั่วไป — **เป็น infrastructure configuration ไม่ใช่ application code**, ส่งมอบเป็น runbook เท่านั้น (ข) in-app critical path ใหม่ผ่าน collection deny-all-client `platformOpsSettings/{docId}` (Super-Admin-only server-side, เก็บ `criticalAlertRecipient.lineUserId` — configuration ล้วนๆ ไม่ผ่าน identity resolution, ตรงกับ pattern เดียวกับ `notificationSettings.testRecipientLineUserId` ของ Phase 7) + module ใหม่ `reportCriticalError()` ที่เขียน `criticalErrors` collection (deny-all client, append-only) เสมอ และส่ง LINE ผ่าน `ChannelAdapter` เดิม (§23) ถ้ามี recipient ตั้งไว้ — ห้าม throw เอง (best-effort) — เรียกจากจุดจำกัด (Balance Reconciliation job, top-level catch ของ `dailyAutomationBatch`/`systemHealthSelfCheck`) ไม่กระจายทั่ว codebase (3) "Backup/Restore Scope Split" — §29's Phase 10 exit criterion ("restore runbook ต้องทดสอบจริง") ทำไม่ได้ด้วย code อย่างเดียว; มติล็อกว่า Phase 10 code ส่งมอบ runbook (`docs/ops/backup-restore-runbook.md`) + verification script เท่านั้น — **การ export/restore จริงบน GCP project จริงเป็น out-of-session infrastructure/operations action ที่ต้องทำแยกก่อนจึงถือว่า exit criterion นี้สำเร็จสมบูรณ์** ไม่ถือว่า Phase 10 code-complete = exit criterion สำเร็จ (4) "Balance Reconciliation Job —§12 Safety Net, ไม่เคย implement" — Phase 10 Planning พบว่า §12's "Balance Reconciliation (Safety Net)" (เทียบ Σ pointsLots.remainingAmount กับ membership.pointsBalance ทุกคืน, alert ถ้าไม่ตรง) ไม่เคยถูกสร้างตั้งแต่ Phase 3 แม้เอกสารระบุ "ต้องมี"; ล็อกว่า Phase 10 implement ตาม §12 เดิมทุกประการ (scheduled function ใหม่, read-only, ไม่ auto-correct mismatch, alert ผ่านกลไกใหม่ของข้อ (2)) — ไม่ใช่มติใหม่ เป็นการทำตาม spec เดิมที่ตกหล่น ไม่ใช่การเดา business rule — ทั้งสี่เรื่องเป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใดใน §12/§23/§26/§29/§30/§33 ไม่เปลี่ยน Permission Matrix V1 | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override — รายละเอียดเต็มที่หัวข้อ 38) |
+| Phase 10 §38.2 Delivery Mechanism Addendum (Option B) | Self-review ระหว่าง implement §38.2 พบว่า point (b)(2) ที่ล็อกไว้เดิม (reuse `ChannelAdapter`/`LineAdapter` เพื่อส่ง critical alert ถึง Super Admin) ใช้งานจริงไม่ได้ — `LineAdapter.send()` resolve credential แบบ per-merchant เสมอ (§19/§20) ไม่มี platform-level LINE channel อยู่ในสถาปัตยกรรมนี้เลย ทำให้ merchant-scoped error ส่งผ่าน channel ของ merchant ที่ไม่เกี่ยวข้อง (ใช้งานได้จริงก็ต่อเมื่อ Super Admin เป็นเพื่อนกับ OA ของ merchant นั้นพอดี ซึ่งไม่เกิดขึ้นจริง) และ platform-wide error ส่งไม่สำเร็จเสมอ (ไม่มี `lineChannelConfigs/platform`) — ไม่ใช่ bug ด้าน safety (try/catch เดิมกันไม่ให้ throw) แต่ delivery ไม่ทำงานจริงตามที่ล็อกไว้; มติล็อกใหม่ (Option B, อนุมัติแล้ว) ว่า `reportCriticalError()` เขียนเฉพาะ `criticalErrors` audit trail เท่านั้น (`alertSent` เป็น `false` เสมอ) **ห้าม reuse merchant LINE credential ใดๆ สำหรับ platform-level alert เด็ดขาด** — ลบ `ChannelAdapter`/`LineAdapter` import ออกจาก `@/modules/ops-alert/service` ทั้งหมด (ไม่ใช่แค่ไม่ใช้ ให้ไม่มีอยู่ในไฟล์เลย กัน regression เงียบ) — `platformOpsSettings`/settings CRUD ยังคงอยู่ครบตามเดิมเพื่อ forward compatibility เท่านั้น — GCP-native half (point a) ไม่กระทบ ยังเป็นกลไก live-alert หลักต่อไป — live LINE delivery ระดับ platform ต้องรอสถาปัตยกรรม platform-level LINE channel/credential ที่ได้รับอนุมัติแยกต่างหากในอนาคต — เป็นการแก้ไข sub-decision เฉพาะกลไกส่ง ไม่ override decision เรื่อง settings storage/audit trail/call-site-narrowness ที่ล็อกไว้เดิมใน §38.2 | Current (แก้ไข sub-decision เดียวของ §38.2 ไม่ override ส่วนอื่น — รายละเอียดเต็มที่ §38.2 Addendum) |
 
 ---
 
@@ -1741,7 +1743,7 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 ## 37. Platform Admin — Phase 9 Locked Blocker Decisions
 
 Phase 9 Planning Review (2026-08-17) พบว่า §18 ("Super Admin เข้าสู่ Support/View-as-Owner Mode ต้อง
-audit ทุกครั้ง"), §26 (threat checklist: "Super Admin support mode ไม่ audit"), §32 (Emergency Control
+audit ทุกครั้ง"), §26 (threat checklist: "Super Admin support mode ไม่ audit"), §30 (Emergency Control
 list, System Health component list), และ §33 (Phase 9 deliverable line) สั่งให้มี capability เหล่านี้อยู่
 แล้ว แต่ไม่เคยมีเอกสารส่วนใดนิยาม**กลไกจริง**ไว้เลย — สามหัวข้อย่อยด้านล่างคือ Blocker Decision ที่ต้องล็อก
 ก่อนเริ่ม implement Phase 9 ตาม Development Workflow ของ CLAUDE.md ("พบ requirement ที่ไม่มี spec รองรับ
@@ -1782,7 +1784,7 @@ Super Admin ได้สิทธิ์เข้าถึงข้อมูล�
 
 ### 37.2 Emergency Control Service State (Blocker 2 — Option B, Locked)
 
-**ปัญหา**: §32 สั่งให้มี Emergency Control (`Suspend Staff`/`Suspend Merchant Operations`/
+**ปัญหา**: §30 สั่งให้มี Emergency Control (`Suspend Staff`/`Suspend Merchant Operations`/
 `Freeze Points Engine`/`Disable Automation`/`Disable Broadcast`) ที่ "แยก Service State" จาก
 subscription/billing state แต่ไม่เคยนิยาม schema/ที่เก็บ/จุดบังคับใช้เลย.
 
@@ -1848,5 +1850,140 @@ subscription/billing state แต่ไม่เคยนิยาม schema/ท
   bootstrap path ตั้งแต่ก่อน package ใดๆ จะถูกกำหนด — เป็นการตีความที่สมเหตุสมผลที่สุดเมื่อไม่มี spec
   ระบุไว้ชัดเจน (นับเฉพาะ "พนักงานที่เพิ่มเข้ามา" ตรงกับชื่อ field `staffLimit` และตรงกับ collection ที่
   ฟังก์ชันนี้เขียนจริง) ไม่ใช่การเดา business rule ที่ไม่มีฐาน.
+
+---
+
+## 38. Platform Hardening — Phase 10 Locked Blocker Decisions
+
+Phase 10 Planning Review (dated at Phase 10 kickoff) found that §26/§29/§30 name required Hardening
+capabilities without ever specifying a mechanism, and separately found that §12's "Balance
+Reconciliation (Safety Net)" was never implemented in any prior phase despite being stated as
+mandatory ("ต้องมี"). All four items below are additive — they fill gaps, they do not override any
+existing locked text.
+
+### 38.1 Broadcast Rate Limiting (Blocker 1 — Option A, Locked)
+
+**Problem**: §26's checklist has its own explicit bullet — "Broadcast spam / message flooding (rate
+limit ต่อ merchant)" — never implemented in Phase 1–9 (confirmed: zero rate-limiting code anywhere in
+the repo as of Phase 10 kickoff).
+
+**Locked decision**:
+- New collection `broadcasts/{broadcastId}` — one document per `sendBroadcast()` call (`merchantId`,
+  `templateType`, `audience`, `sentAt`, `sentCount`, `failedCount`), distinct from the existing
+  per-recipient `notificationLog` (§23) — needed because Firestore has no native "count distinct
+  broadcastId" aggregation, and this doc doubles as a genuinely useful "broadcast history" list that
+  didn't exist before.
+- New field `merchants/{id}.broadcastLimits: { maxBroadcastsPerDay: number }` — **Owner-configurable,
+  self-service**, same governance pattern as `staffLimits`/`segmentRulesConfig` (§9, §34: never
+  hard-coded), seeded with a conservative default at merchant creation (the exact default number is
+  an implementation default, not a specified business rule, same category as `DEFAULT_STAFF_LIMITS`).
+- Enforcement: `sendBroadcast()` counts `broadcasts` docs for the merchant within the trailing 24
+  hours and creates the new `broadcasts/{broadcastId}` doc **inside the same Firestore transaction**
+  (reserve-then-send), aborting with `ValidationError` if at/over `maxBroadcastsPerDay` — same
+  "check inside the same transaction as the write, never check-then-write" principle already locked
+  for Staff Limits (§9/§11) and Entitlement Limits (§37.3). The per-recipient send loop only starts
+  after the slot is successfully reserved.
+- `sendTestBroadcast()` is **not** rate-limited — it sends once to a single configured test
+  recipient (§23 Phase 7 lock), not a mass send, so it isn't the "flooding" surface this item targets.
+- This is independent of, and composable with, Emergency Control's `broadcastDisabled` (§37.2,
+  Phase 9) — the Emergency Control toggle remains the hard Super-Admin kill switch; this new limit is
+  a softer, Owner-tunable, day-to-day guard rail. Neither supersedes the other.
+
+### 38.2 Monitoring & Critical Alert Path (Blocker 2 — Option C, Locked)
+
+**Problem**: §30 requires Cloud Functions error-rate alerting plus a separate critical tier for
+business-state-affecting errors, routed to "internal team" via email/LINE — no recipient, no
+implementation boundary, and nothing built in any prior phase.
+
+**Locked decision — two halves, both required**:
+- **(a) GCP-native** — a Cloud Monitoring Alerting Policy watching Cloud Functions error-rate and
+  scheduled-job-failure metrics (`dailyAutomationBatch`, `systemHealthSelfCheck`, `onEventCreate`,
+  `onStaffUserWrite`). This is **infrastructure configuration, not application code** — Phase 10
+  delivers a documented runbook/policy definition only; provisioning it against a real GCP project is
+  an out-of-session operations action (same category as §38.3 below).
+- **(b) In-app critical path** — new deny-all-client collection `platformOpsSettings/{docId}` (single
+  well-known document, same isolation tier as `emergencyControls`/`supportSessions`, §37.1/§37.2):
+  server-write-only, Super-Admin-only via a dedicated API route, holding
+  `criticalAlertRecipient: { lineUserId: string } | null` — a plain configured value, never resolved
+  via identity verification, same pattern as `notificationSettings.testRecipientLineUserId` (Phase 7
+  lock). Recipient is **LINE only** in V1 — `EmailAdapter` remains explicitly future/out-of-scope
+  (§23), so no new delivery channel is invented here.
+  New module `reportCriticalError(params: { merchantId: string | null; source: string; message:
+  string; context?: Record<string, unknown> })`: (1) always writes an entry to a new, deny-all-client,
+  append-only `criticalErrors` collection (audit/history trail, analogous to `auditLogs` but for
+  system-level errors); (2) if a recipient is configured, sends via the **existing** `ChannelAdapter`
+  interface (§23) — reuses Phase 7 infrastructure, no new adapter; (3) **never throws** — a failure to
+  alert must never crash the caller's own error handling (best-effort, catches its own errors
+  internally).
+- Call sites are deliberately narrow (§10 "ห้ามใส่ permission check/logic กระจาย" applied to this too):
+  the Balance Reconciliation job (§38.4) is the primary caller; `dailyAutomationBatch` and
+  `systemHealthSelfCheck` also call it from their own top-level catch, before Cloud Functions' native
+  retry takes over. Not scattered to every function in the codebase.
+
+#### 38.2 Addendum — In-App Delivery Mechanism Revised to Option B (Locked)
+
+**Problem found during implementation**: point (b)(2) above assumed the existing `ChannelAdapter`/
+`LineAdapter` could be reused generically to deliver a critical alert to a platform-wide Super
+Admin recipient. Self-review found this assumption false — `LineAdapter.send()` resolves
+credentials via `getMessagingChannelAccessToken(merchantId)`, and **every LINE Messaging channel
+in this architecture is per-merchant** (§19/§20: each merchant connects its own LINE OA during
+onboarding; no platform-level LINE channel exists anywhere in the design). Consequently:
+for a merchant-scoped critical error, delivery would only succeed if the Super Admin's LINE user
+happened to already be a friend of *that specific merchant's* OA (never true in practice, and a
+clear cross-merchant-boundary smell even when it accidentally worked); for a platform-wide error
+(`merchantId: null`), delivery would always fail (no `lineChannelConfigs/platform` document
+exists). This was never a safety bug (the original `try/catch` meant it never threw and the audit
+trail still wrote), but it meant "live delivery" was, in practice, non-functional as designed.
+
+**Locked decision — Option B**: `reportCriticalError()` no longer attempts any delivery. It
+writes ONLY to `criticalErrors` (`alertSent` is now always `false`). **No merchant LINE
+credential is ever read or reused for a platform-level alert, under any circumstance.** The
+`ChannelAdapter`/`LineAdapter` imports are removed from `@/modules/ops-alert/service` entirely —
+not merely unused, structurally absent, so this constraint can't silently regress.
+`platformOpsSettings`/`getCriticalAlertSettings`/`setCriticalAlertSettings` (the recipient
+settings surface, Super-Admin-only, audited) are **preserved unchanged** — the value is stored
+for forward compatibility only. The GCP-native half (point (a) above,
+`docs/ops/monitoring-alerting-policy.md`) is unaffected and remains the live-alerting mechanism
+until a platform-level channel exists.
+
+**Live LINE delivery for platform-level critical alerts is deferred** and requires a separately
+approved platform-level LINE notification channel/credential architecture (a new Provider not
+tied to any merchant, its own deny-all `platformLineChannelConfig` doc with a Secret Manager
+reference, and Console setup — the same category of un-automatable human step §20 already
+documents for merchant onboarding) in a future phase. This addendum does not override the
+original (a)/(b) decision structure above — it corrects only the delivery-mechanism sub-decision
+within (b), and does not reopen the settings-storage, audit-trail, or call-site-narrowness
+decisions, all of which stand as originally locked.
+
+### 38.3 Backup/Restore Scope Split (Blocker 3 — Option A, Locked)
+
+**Problem**: §29's own named Phase 10 exit criterion ("Restore runbook ต้องเขียนและทดสอบจริง") cannot be
+satisfied by application code alone — no scheduled export exists, and a real restore drill requires a
+real GCP project this development session does not have access to.
+
+**Locked decision**: Phase 10 code delivers exactly two artifacts — `docs/ops/backup-restore-runbook.md`
+(exact `gcloud firestore export`/`import` commands, the export cadence §29 already specifies — daily,
+higher frequency for `pointsLedger`/`pointsLots`/`voucherInstances`/`couponInstances`/`auditLogs`,
+retention ≥30 days, same region as production) and a verification script that re-runs the Balance
+Reconciliation check (§38.4) plus basic pre/post-restore count sanity checks against a restored
+target. **The actual export configuration and a live restore drill against a real GCP project is
+explicitly an out-of-session infrastructure/operations action** — §29's exit criterion is only fully
+satisfied once that action is performed and confirmed outside this coding session; Phase 10 being
+code-complete does not, by itself, satisfy this exit criterion.
+
+### 38.4 Balance Reconciliation Job (§12 Safety Net — gap fix, not a new decision)
+
+**Problem**: §12 states "ต้องมี" (must have) a nightly job comparing `Σ pointsLots.remainingAmount
+(status=ACTIVE)` against `membership.pointsBalance` per membership, alerting on mismatch — this was
+never implemented in Phase 1–9.
+
+**Fix (implements §12 exactly as already specified — no new business rule)**: new scheduled Cloud
+Function `balanceReconciliationJob`, nightly, per merchant per membership: sums active lot
+`remainingAmount`, compares to the cached `pointsBalance`; on any mismatch, writes a `DEGRADED` status
+to `systemHealth` (a new `BalanceReconciliation` component, additive to the `SystemHealthComponent`
+enum from §37) with the mismatch count, and calls `reportCriticalError()` (§38.2) since a balance
+mismatch is exactly the example §30 itself gives for a business-state-affecting critical error. It is
+**read-only** — it never auto-corrects `pointsLots`/`pointsLedger`/`membership.pointsBalance` itself;
+§12's Reversal pattern requires a human-reviewed correction, not a silent automated write.
 
 ---

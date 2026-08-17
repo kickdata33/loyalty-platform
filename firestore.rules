@@ -202,6 +202,24 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Phase 10 — Hardening (§38, §26). `broadcasts` is server-only (rate-limit source of truth —
+    // the Dashboard reads broadcast history through `getBroadcastReport`/the protected API route,
+    // never a direct client read, same "server is the only path" reasoning as `notificationLog`).
+    // `platformOpsSettings`/`criticalErrors` are 100% deny-all, no exceptions, not even Super
+    // Admin through the normal client SDK — same tier as `supportSessions`/`emergencyControls`
+    // (§37): the critical-alert recipient and system-error history are only ever read/written
+    // through server-side service functions (`@/modules/ops-alert/service`), so every use is
+    // guaranteed to be audited/traced, never bypassable via a direct client read.
+    match /broadcasts/{broadcastId} {
+      allow read, write: if false;
+    }
+    match /platformOpsSettings/{docId} {
+      allow read, write: if false;
+    }
+    match /criticalErrors/{errorId} {
+      allow read, write: if false;
+    }
+
     // Everything else stays denied by Firestore's own default (no matching rule = no access) —
     // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
     // collections that actually exist; add a new explicit match block, not a broad wildcard, when

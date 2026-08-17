@@ -327,6 +327,14 @@
         { "fieldPath": "merchantId", "order": "ASCENDING" },
         { "fieldPath": "periodStart", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "broadcasts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "sentAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

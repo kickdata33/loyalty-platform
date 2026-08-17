@@ -1,14 +1,16 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
 import { assertBroadcastNotDisabled } from "@/modules/emergency-control/service";
 import { writeEvent } from "@/modules/event/service";
+import { getMerchantRecordOrThrow } from "@/modules/merchant/service";
 import { LineAdapter } from "@/modules/notification/adapters/line-adapter";
 import type { ChannelAdapter } from "@/modules/notification/adapters/channel-adapter";
 import type {
   BroadcastAudience,
+  BroadcastRecord,
   NotificationSettings,
   NotificationTemplateType,
 } from "@/modules/notification/types";
@@ -149,6 +151,51 @@ export async function sendTestBroadcast(ctx: AuthContext, body: string, adapter:
   await adapter.send({ merchantId: ctx.merchantId, recipientId: testRecipient, body });
 }
 
+/**
+ * Broadcast Rate Limiting (§26 "Broadcast spam / message flooding", §38.1, Phase 10, Locked —
+ * Option A). Reserve-then-send: counts `broadcasts` docs for this merchant in the trailing 24h
+ * and creates the new `broadcasts/{broadcastId}` doc INSIDE the same transaction, same
+ * "check inside the same transaction as the write, never check-then-write" principle already
+ * locked for Staff Limits (§9/§11) and Entitlement Limits (§37.3). Independent of, and composable
+ * with, Emergency Control's `broadcastDisabled` kill switch (§37.2) — that's checked separately,
+ * above, in `sendBroadcast` itself.
+ */
+async function reserveBroadcastSlot(
+  merchantId: string,
+  templateType: NotificationTemplateType,
+  audience: BroadcastAudience,
+): Promise<string> {
+  const merchant = await getMerchantRecordOrThrow(merchantId);
+  const db = getDb();
+  const ref = db.collection(COLLECTIONS.broadcasts).doc();
+  const windowStart = Timestamp.fromMillis(Date.now() - 24 * 60 * 60 * 1000);
+
+  await db.runTransaction(async (tx) => {
+    const recentSnap = await tx.get(
+      db
+        .collection(COLLECTIONS.broadcasts)
+        .where("merchantId", "==", merchantId)
+        .where("sentAt", ">=", windowStart)
+        .count(),
+    );
+    if (recentSnap.data().count >= merchant.broadcastLimits.maxBroadcastsPerDay) {
+      throw new ValidationError(
+        `This merchant has reached its broadcast limit for today (${merchant.broadcastLimits.maxBroadcastsPerDay}). Try again later.`,
+      );
+    }
+    tx.create(ref, {
+      merchantId,
+      templateType,
+      audience,
+      sentAt: FieldValue.serverTimestamp(),
+      sentCount: 0,
+      failedCount: 0,
+    } satisfies Omit<BroadcastRecord, "sentAt"> & { sentAt: FirebaseFirestore.FieldValue });
+  });
+
+  return ref.id;
+}
+
 function membershipMatchesAudience(member: MembershipRecord, audience: BroadcastAudience): boolean {
   if (audience === "ALL") return true;
   if (typeof audience === "object") return member.pointsBalance >= audience.pointsGte;
@@ -176,8 +223,8 @@ export async function sendBroadcast(
   const template = (settings.data() as NotificationSettings | undefined)?.templates?.[input.templateType];
   if (!template || !template.enabled) throw new ValidationError("Template disabled or not configured.");
 
+  const broadcastId = await reserveBroadcastSlot(ctx.merchantId, input.templateType, input.audience);
   const membersSnap = await getDb().collection(COLLECTIONS.memberships).where("merchantId", "==", ctx.merchantId).get();
-  const broadcastId = getDb().collection(COLLECTIONS.notificationLog).doc().id;
   const body = renderTemplate(template.body, input.variables);
 
   let sentCount = 0;
@@ -200,6 +247,11 @@ export async function sendBroadcast(
       await writeNotificationLog({ merchantId: ctx.merchantId, membershipId: doc.id, templateType: input.templateType, status: "failed", error: err instanceof Error ? err.message : "unknown error", broadcastId });
     }
   }
+
+  // Best-effort final tally on the reservation doc — same pattern as other post-loop stats
+  // writes in this codebase (e.g. `merchantDailyStats`), not part of the atomic reservation
+  // itself (the reservation only needs to happen before the send loop, per §38.1).
+  await getDb().collection(COLLECTIONS.broadcasts).doc(broadcastId).update({ sentCount, failedCount });
 
   await writeAuditLog({
     merchantId: ctx.merchantId,

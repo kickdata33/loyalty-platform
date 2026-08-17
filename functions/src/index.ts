@@ -16,6 +16,8 @@ import type { Automation } from "../../src/modules/promotion-automation/types";
 import { SCHEDULED_TRIGGER_TYPES } from "../../src/modules/promotion-automation/types";
 import type { StaffUserClaimsSnapshot } from "../../src/modules/rbac/staff-claims";
 import { syncStaffCustomClaims } from "../../src/modules/rbac/staff-claims";
+import { reportCriticalError } from "../../src/modules/ops-alert/service";
+import { findBalanceMismatchesForMerchant } from "../../src/modules/reconciliation/service";
 import {
   generateDueReportsForMerchant,
   recomputeMemberSnapshotForMerchant,
@@ -108,7 +110,7 @@ export const onEventCreate = onDocumentCreated("events/{eventId}", async (event)
  * scoping — not a guess at an undefined threshold). A membership that has never visited
  * (`firstVisitAt == null`) is left `NEW`, never reclassified by this job.
  */
-export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
+async function runDailyAutomationBatch(): Promise<void> {
   const db = getFirestore();
   const now = new Date();
 
@@ -246,10 +248,26 @@ export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
     .collection("systemHealth")
     .doc("Scheduler")
     .set({ component: "Scheduler", lastCheckedAt: Timestamp.now() }, { merge: true });
+}
+
+/** Cloud Functions retry/logging for `dailyAutomationBatch` is preserved unchanged (the error is
+ * always rethrown after reporting) — `reportCriticalError` (§38.2) is a side-channel notification,
+ * not a replacement for the existing "let the whole event retry" policy (§17). */
+export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
+  try {
+    await runDailyAutomationBatch();
+  } catch (err) {
+    await reportCriticalError({
+      merchantId: null,
+      source: "dailyAutomationBatch",
+      message: err instanceof Error ? err.message : "unknown error",
+    });
+    throw err;
+  }
 });
 
 /**
- * System Health self-check (§32, §37.1 note; Phase 9 foundation). Runs independently of
+ * System Health self-check (§30, §37.1 note; Phase 9 foundation). Runs independently of
  * `dailyAutomationBatch` so a health check isn't gated on that job's own (potentially long) run.
  *
  * Writes a REAL status for exactly two components this codebase has an honest signal for:
@@ -259,13 +277,15 @@ export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
  *   run (above) — `DEGRADED` if the last completed run is more than 26 hours old (the job runs
  *   every 24h; 26h is slack, not a business threshold), `UNKNOWN` if it has never run yet.
  *
- * The remaining five named components (§32: LINE, AutomationWorker, Reports, Authentication,
+ * The remaining five named components (§30: LINE, AutomationWorker, Reports, Authentication,
  * ErrorJobs) are written as `UNKNOWN` — deliberately, not a fabricated `OK`/`DEGRADED` — since no
  * metric for any of them is specified anywhere in FINAL-ARCHITECTURE.md and inventing one here
  * would be inventing a business rule (CLAUDE.md §0). Real instrumentation for these is future work
- * (see the Phase 9 implementation report's "remaining known limitations").
+ * (see the Phase 9 implementation report's "remaining known limitations"). `BalanceReconciliation`
+ * is excluded from the "uninstrumented" list below — it gets its real status from
+ * `balanceReconciliationJob` (§38.4), not from this self-check.
  */
-export const systemHealthSelfCheck = onSchedule("every 15 minutes", async () => {
+async function runSystemHealthSelfCheck(): Promise<void> {
   const db = getFirestore();
   const now = Timestamp.now();
   const healthCollection = db.collection("systemHealth");
@@ -302,15 +322,74 @@ export const systemHealthSelfCheck = onSchedule("every 15 minutes", async () => 
     { merge: true },
   );
 
-  const uninstrumented = SYSTEM_HEALTH_COMPONENTS.filter((c) => c !== "Database" && c !== "Scheduler");
+  const uninstrumented = SYSTEM_HEALTH_COMPONENTS.filter(
+    (c) => c !== "Database" && c !== "Scheduler" && c !== "BalanceReconciliation",
+  );
   await Promise.all(
     uninstrumented.map((component) =>
       healthCollection.doc(component).set({
         component,
         status: "UNKNOWN" satisfies SystemHealthStatus,
-        message: "Not yet instrumented — no metric defined in FINAL-ARCHITECTURE.md §32 for this component.",
+        message: "Not yet instrumented — no metric defined in FINAL-ARCHITECTURE.md §30 for this component.",
         lastCheckedAt: now,
       }),
     ),
   );
+}
+
+export const systemHealthSelfCheck = onSchedule("every 15 minutes", async () => {
+  try {
+    await runSystemHealthSelfCheck();
+  } catch (err) {
+    await reportCriticalError({
+      merchantId: null,
+      source: "systemHealthSelfCheck",
+      message: err instanceof Error ? err.message : "unknown error",
+    });
+    throw err;
+  }
+});
+
+/**
+ * Balance Reconciliation Job (§12 Safety Net, §38.4; Phase 10 — implements §12 exactly as
+ * already specified, a gap fix, not a new decision). Nightly, independent of
+ * `dailyAutomationBatch`. Strictly read-only (see `reconciliation/service.ts`) — never
+ * auto-corrects a mismatch. On any mismatch for a merchant, reports ONE critical alert per
+ * merchant per run (never per membership, to avoid the alert path itself becoming a flooding
+ * vector — §38.2) and writes an aggregate platform-wide status to `systemHealth/BalanceReconciliation`.
+ */
+export const balanceReconciliationJob = onSchedule("every 24 hours", async () => {
+  const db = getFirestore();
+  const merchantsSnap = await db.collection("merchants").get();
+
+  let totalMismatches = 0;
+  let merchantsWithMismatches = 0;
+
+  for (const merchantDoc of merchantsSnap.docs) {
+    const merchantId = merchantDoc.id;
+    const mismatches = await findBalanceMismatchesForMerchant(merchantId);
+    if (mismatches.length === 0) continue;
+
+    merchantsWithMismatches += 1;
+    totalMismatches += mismatches.length;
+    await reportCriticalError({
+      merchantId,
+      source: "balanceReconciliationJob",
+      message: `${mismatches.length} membership balance mismatch(es) detected.`,
+      context: { mismatchCount: mismatches.length, membershipIds: mismatches.map((m) => m.membershipId) },
+    });
+  }
+
+  await db
+    .collection("systemHealth")
+    .doc("BalanceReconciliation")
+    .set({
+      component: "BalanceReconciliation",
+      status: totalMismatches > 0 ? "DEGRADED" : "OK",
+      message:
+        totalMismatches > 0
+          ? `${totalMismatches} mismatch(es) across ${merchantsWithMismatches} merchant(s).`
+          : "All balances reconciled.",
+      lastCheckedAt: Timestamp.now(),
+    });
 });

@@ -7,6 +7,7 @@ import { PERMISSIONS } from "@/modules/rbac/permission-matrix";
 import type {
   BrandingConfig,
   BranchRecord,
+  BroadcastLimits,
   MerchantRecord,
   PointsExpirationPolicy,
   ReportSettings,
@@ -56,6 +57,12 @@ const DEFAULT_REPORT_SETTINGS: ReportSettings = {
   dailyItems: [],
   weeklyItems: [],
   monthlyItems: [],
+};
+
+/** §26 "Broadcast spam / message flooding", §38.1 (Phase 10, Locked) — an implementation
+ * default, not a specified business rule (same category as `DEFAULT_STAFF_LIMITS`). */
+const DEFAULT_BROADCAST_LIMITS: BroadcastLimits = {
+  maxBroadcastsPerDay: 5,
 };
 
 const SLUG_PATTERN = /^[a-z0-9-]{3,50}$/;
@@ -130,6 +137,7 @@ export async function createMerchantWithOwner(
       segmentRulesConfig: { ...DEFAULT_SEGMENT_RULES, ...input.segmentRulesConfig },
       pointsExpirationPolicy: DEFAULT_POINTS_EXPIRATION_POLICY,
       reportSettings: DEFAULT_REPORT_SETTINGS,
+      broadcastLimits: DEFAULT_BROADCAST_LIMITS,
       ownerUserId: input.ownerAuthUid,
       createdAt: FieldValue.serverTimestamp(),
     });

@@ -1,9 +1,9 @@
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import { SYSTEM_HEALTH_COMPONENTS, type SystemHealthRecord } from "@/modules/system-health/types";
 
-/** Reads the current snapshot for every named component (§32, §37 note) — missing documents
- * (a component `systemHealthSelfCheck` hasn't run for yet) are returned as `UNKNOWN` rather than
- * omitted, so the UI always shows all seven components. Takes no `SuperAdminAuthContext` — gated
+/** Reads the current snapshot for every named component (§30, §37 note, §38.4) — missing
+ * documents (a component no scheduled job has run for yet) are returned as `UNKNOWN` rather than
+ * omitted, so the UI always shows all eight components. Takes no `SuperAdminAuthContext` — gated
  * entirely by the caller (`/api/superadmin/system-health` calls `requireSuperAdminAuthContext`
  * first). */
 export async function getSystemHealth(): Promise<SystemHealthRecord[]> {

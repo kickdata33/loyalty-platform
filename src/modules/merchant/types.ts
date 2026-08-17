@@ -39,6 +39,37 @@ export interface BrandingConfig {
   primaryColor?: string;
 }
 
+/**
+ * `merchants/{merchantId}.reportSettings` — §5, §24 "Report Settings Schema Location" (Phase 8,
+ * Locked): embedded field on `merchants`, same pattern as `staffLimits`/`segmentRulesConfig`.
+ * Item values must stay within §24's own documented per-frequency item lists — this union is
+ * exhaustive on purpose, not an open string, so an invented item name is a compile error.
+ * Delivery channel is deliberately NOT part of this shape in V1 — Dashboard-only, per §24 "Report
+ * Delivery Channel Scope" (Phase 8, Locked); there is nothing for the Owner to choose yet.
+ */
+export type DailyReportItem =
+  | "NEW_MEMBERS"
+  | "ACTIVE"
+  | "POINTS"
+  | "REWARDS"
+  | "COUPONS"
+  | "STAFF_ACTIVITY";
+export type WeeklyReportItem = "GROWTH" | "RETURNING" | "AT_RISK" | "INACTIVE" | "PROMOTION_PERFORMANCE";
+export type MonthlyReportItem =
+  | "MEMBERSHIP_GROWTH"
+  | "RETENTION"
+  | "REWARD_COUPON_PERFORMANCE"
+  | "STAFF_SUMMARY";
+
+export interface ReportSettings {
+  dailyEnabled: boolean;
+  weeklyEnabled: boolean;
+  monthlyEnabled: boolean;
+  dailyItems: DailyReportItem[];
+  weeklyItems: WeeklyReportItem[];
+  monthlyItems: MonthlyReportItem[];
+}
+
 export interface MerchantRecord {
   id: string;
   name: string;
@@ -50,6 +81,7 @@ export interface MerchantRecord {
   staffLimits: StaffLimits;
   segmentRulesConfig: SegmentRulesConfig;
   pointsExpirationPolicy: PointsExpirationPolicy;
+  reportSettings: ReportSettings;
   ownerUserId: string;
   createdAt: Timestamp;
 }

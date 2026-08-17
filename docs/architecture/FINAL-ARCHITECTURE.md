@@ -246,6 +246,11 @@ merchants/{merchantId}
   - staffLimits{ maxPointsPerTransaction, maxPointsPerHour, maxPointsPerDay,
                  manualAdjustmentLimit, managerApprovalThreshold }
   - segmentRulesConfig{ inactiveAfterDays, atRiskAfterDays, regularMinVisits30d, ... }
+  - reportSettings{ dailyEnabled, weeklyEnabled, monthlyEnabled,
+                     dailyItems[], weeklyItems[], monthlyItems[] }
+    // เพิ่มโดย Phase 8 Architecture Decision (Locked) — ดูหัวข้อ 24 "Report Settings Schema
+    // Location" — Dashboard-only delivery ใน V1 จึงไม่มี field ช่องทางส่ง (ดูหัวข้อ 24 "Report
+    // Delivery Channel Scope")
   - ownerUserId, createdAt
   # ห้ามมี packageId/subscriptionStatus/trialEndsAt — อยู่ที่ subscriptions/{merchantId} เท่านั้น (หัวข้อ 25)
 
@@ -369,8 +374,21 @@ lineChannelConfigs/{merchantId}   // ไม่มี client read — ดูห�
 reports/{reportId}
   - merchantId, type ('daily'|'weekly'|'monthly'), periodStart, periodEnd
   - snapshotData{} (frozen), generatedAt, deliveredChannels[]
+    // Phase 8 V1: deliveredChannels เก็บได้แค่ 'DASHBOARD' เท่านั้น — ดูหัวข้อ 24 "Report Delivery
+    // Channel Scope — Phase 8 Architecture Decision (Locked)"
 
 merchantDailyStats/{merchantId_date}   // aggregate cache สำหรับ Dashboard real-time KPI
+                                        // id = `${merchantId}_${YYYY-MM-DD}` ตาม merchant-local
+                                        // calendar day (หัวข้อ 24 "Report Period Boundaries")
+  - merchantId, date
+  - membersTotal, membersNew, membersActive, membersReturning, membersAtRisk, membersInactive, membersVip
+  - pointsEarned, pointsRedeemed
+  - rewardsRedeemed, rewardsUsed
+  - couponsIssued, couponsUsed
+  - updatedAt
+    // เพิ่มโดย Phase 8 Architecture Decision (Locked) — field list เดิมไม่เคยระบุไว้ (diff เดิมของหัวข้อนี้
+    // บอกแค่ "aggregate cache สำหรับ Dashboard real-time KPI" โดยไม่มี field list) — รายการ field ตรงกับ
+    // KPI ที่หัวข้อ 24 กำหนดไว้แล้วทุกประการ ไม่เพิ่ม metric ใหม่ ไม่มี revenue/sales field ใดๆ (หัวข้อ 0, 24)
 
 systemHealth/{component}          // Database/LINE/AutomationWorker/Scheduler/Reports/Auth/ErrorJobs
 
@@ -862,6 +880,35 @@ membership.activityStats: {
 
 Segment คำนวณจาก **threshold ที่ merchant ตั้งเองได้** (ห้าม hard-code เช่น "30 วัน"): `merchants/{id}.segmentRulesConfig = { inactiveAfterDays, atRiskAfterDays, regularMinVisits30d, ... }` — คำนวณผ่าน **Scheduled Daily Batch Job เดียวกับที่ใช้ประเมิน `INACTIVE_DAYS` trigger ของ Automation Engine** (ไม่สร้างระบบคำนวณซ้ำสองชุด) เพราะ "inactive" เป็นผลจากเวลาที่ผ่านไปโดยไม่มี event ใหม่ ต้องใช้ batch scan ไม่ใช่ real-time trigger อย่างเดียว
 
+### Activity Stats Maintenance — Phase 8 Architecture Decision (Locked, 2026-08-17)
+
+**ขอบเขต**: มตินี้ระบุกลไกที่ทำให้ `membership.activityStats.{lastVisitAt, firstVisitAt, visitCount30d,
+visitCount90d}` มีค่าจริง — เอกสารก่อนหน้านี้ประกาศ field เหล่านี้ไว้ (หัวข้อ 5, หัวข้อนี้) และระบุว่า
+`segment` คำนวณผ่าน Scheduled Daily Batch Job แต่ไม่เคยระบุว่าใครเขียนค่าอื่นนอกจาก `segment` ลงใน field
+เหล่านี้ — ผลคือ Phase 3–6 ไม่มี code path ใดเขียนค่าเหล่านี้เลยนอกจากค่าเริ่มต้นตอนสร้าง Membership
+(`NEW`/`0`/`0`/`null`) ทำให้ `segment` ค้างที่ `NEW` ตลอดไปในทางปฏิบัติ (Batch Job's segment step ต้องการ
+`firstVisitAt && lastVisitAt` เป็นค่าจริงก่อนถึงจะ reclassify ได้) — ไม่กระทบ field/schema อื่นใน
+`memberships.activityStats` (หัวข้อ 5, 7) ไม่ override ข้อความใดที่มีอยู่เดิม:
+
+- `recordVisit()` (`/modules/points`, Phase 3) ต้องตั้ง `firstVisitAt` (ถ้ายังไม่เคยตั้ง) และ `lastVisitAt`
+  (ทุกครั้ง) บน `memberships/{membershipId}` ภายใน **transaction เดียวกัน** กับการเขียน `visits/{visitId}`
+  เมื่อ `countsAsVisit=true` เท่านั้น (ตรงกับหลักการเดิมของหัวข้อนี้ที่ว่า correction/automation bonus ไม่ใช่
+  "การมาร้าน")
+- `visitCount30d`/`visitCount90d` เป็น **rolling window** ไม่ใช่ counter ที่เพิ่มอย่างเดียว — ต้องคำนวณใหม่
+  ทุกวันโดย **Scheduled Daily Batch Job เดียวกัน** ที่มีอยู่แล้ว (`dailyAutomationBatch`, หัวข้อนี้/หัวข้อ 16
+  เดิม) ด้วยการ query `visits` collection ของแต่ละ Membership ด้วย composite index ที่มีอยู่แล้ว
+  (`(merchantId, membershipId, recordedAt desc)`, หัวข้อ 28) — **ไม่สร้าง batch job แยกซ้ำสองชุด** ตรงตาม
+  หลักการเดิมของหัวข้อนี้ ("ไม่สร้างระบบคำนวณซ้ำสองชุด")
+- ห้าม implement เป็น counter ที่เพิ่มค่าเรื่อยๆ โดยไม่มีการคำนวณ window ใหม่ (จะทำให้ค่าไม่ตรงความหมาย "30
+  วัน"/"90 วัน" อีกต่อไป) และห้ามเปลี่ยนเป็นคำนวณสดตอน Report/Automation อ่านค่าเท่านั้น (Automation Engine's
+  `evaluateConditions()` ที่มีอยู่แล้วตั้งแต่ Phase 6 อ่านค่าเหล่านี้แบบ field บน Membership โดยตรง — การไม่
+  persist ค่าจะทำให้ caller เดิมนั้นพัง)
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: field เหล่านี้ถูกประกาศไว้แล้วที่หัวข้อ 5/7/15 ครบ — มตินี้เพียงเติม
+"ใครเขียนค่า เมื่อไหร่" ที่เอกสารเดิมไม่เคยระบุ (ช่องว่างเดียวกับที่ CLAUDE.md เตือนไม่ให้เดา business rule)
+ไม่เปลี่ยน field name/type ใดๆ ไม่เปลี่ยนพฤติกรรม `segment` recalculation ที่มีอยู่แล้วใน `dailyAutomationBatch`
+(Phase 6) เพียงแค่ทำให้ input ของมันมีค่าจริงเป็นครั้งแรก
+
 ---
 
 ## 16. Promotion / Automation
@@ -1282,6 +1329,76 @@ Daily/Weekly/Monthly (Custom period เป็น future — schema `periodStart/
 
 เลือกได้: Dashboard, LINE, Email (future) — Report ที่สร้างแล้วต้องเก็บ Snapshot เสมอ การเปลี่ยน Settings วันนี้ห้ามเปลี่ยน Report เก่า ต้องมี Report History
 
+### Report Settings Schema Location — Phase 8 Architecture Decision (Locked, 2026-08-17)
+
+**ขอบเขต**: มตินี้ระบุตำแหน่ง schema ของการตั้งค่า Report (ความถี่ที่เปิดใช้, รายการ item ที่ Owner เลือกรับ
+ต่อความถี่) — เอกสารก่อนหน้านี้ในหัวข้อนี้พูดถึง "merchant.reportSettings" ในรูปประโยคเท่านั้น โดยไม่เคย
+ปรากฏเป็น field ในตาราง schema ฉบับเต็มของหัวข้อ 5 เลย ไม่กระทบ field อื่นของ `merchants/{merchantId}` ที่มี
+อยู่แล้ว ไม่ override ข้อความใดที่มีอยู่เดิม:
+
+- ล็อกว่า `reportSettings` เป็น **field แบบ embedded บน `merchants/{merchantId}`** (ไม่ใช่ collection แยก
+  ต่างหาก) — ตรงกับรูปประโยคเดิมของหัวข้อนี้ตรงตัว และตรงกับ pattern ที่ `merchants` เก็บ
+  `staffLimits{}`/`segmentRulesConfig{}` เป็น embedded object อยู่แล้ว
+- Field list: `{ dailyEnabled, weeklyEnabled, monthlyEnabled, dailyItems[], weeklyItems[], monthlyItems[] }`
+  — รายการ item ที่เลือกได้ต่อความถี่ต้องตรงกับรายการที่หัวข้อนี้ระบุไว้แล้วเท่านั้น (Daily: New
+  Members/Active/Points/Rewards/Coupons/Staff Activity; Weekly: Growth/Returning/At Risk/Inactive/
+  Promotion Performance; Monthly: Membership Growth/Retention/Reward-Coupon Performance/Staff Summary) —
+  ไม่เพิ่ม item ใหม่นอกเหนือจากที่ระบุไว้แล้ว
+- อ่าน/แก้ผ่าน server-side service function เท่านั้น (permission เดียวกับ Merchant Settings ทั่วไป, หัวข้อ
+  9) — Security Rule ปิด client write ทั้งหมดเหมือน `merchants/{merchantId}` เดิม
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: field นี้ไม่เคยถูกกำหนดตำแหน่งไว้ชัดเจนมาก่อน มตินี้เพียงเติมช่องว่าง
+ให้ตรงกับประโยคเดิมของหัวข้อนี้ ("ตาม merchant.reportSettings") ไม่ลบ ไม่ override field อื่นใด
+
+### Report Delivery Channel Scope — Phase 8 Architecture Decision (Locked, 2026-08-17)
+
+**ขอบเขต**: มตินี้ระบุขอบเขตช่องทางส่ง Report จริงของ Phase 8 V1 — เอกสารก่อนหน้านี้ระบุช่องทางที่ "เลือก
+ได้: Dashboard, LINE, Email (future)" โดยไม่เคยตรวจสอบว่า LINE เป็นไปได้จริงหรือไม่สำหรับผู้รับที่เป็น
+Owner/Staff (ต่างจาก Report ที่ส่งหาลูกค้า) — Phase 7 NOTIFY_OWNER Decision (ล็อกแล้ว, ดู Changelog) ได้
+ระบุไว้แล้วว่า **ห้าม implement Owner/Staff LINE identity resolution หรือ schema staff/owner identity
+ใหม่ใดๆ** และเลื่อนไปอย่างไม่มีกำหนด — Report เป็น Owner-facing เช่นเดียวกัน จึงติด block เดียวกันทุกประการ
+ไม่กระทบ field `deliveredChannels[]` ที่มีอยู่แล้วในหัวข้อ 5 ไม่ override ข้อความใดที่มีอยู่เดิม:
+
+- Phase 8 V1 ส่งมอบเฉพาะ **Dashboard delivery** — `reports/{id}.deliveredChannels[]` เก็บได้แค่ค่า
+  `'DASHBOARD'` เท่านั้นใน V1
+- **ห้าม** implement Owner/Staff LINE identity resolution หรือ schema ใหม่ใดๆ ใน Phase 8 (ย้ำหลักการ
+  เดียวกับ Phase 7 NOTIFY_OWNER Decision)
+- **ห้าม** นำ `notificationSettings.testRecipientLineUserId` มาใช้ส่ง Report — field นั้นถูกล็อกไว้แล้วให้ใช้
+  เฉพาะ Broadcast's Test Send เท่านั้น (Phase 7 Decision) การนำมาใช้ซ้ำสำหรับ Report จะเป็นการขยายขอบเขตของ
+  มติเดิมโดยไม่มีการอนุมัติใหม่
+- LINE delivery สำหรับ Report ยังคง**ไม่มีกำหนดเวลา**เช่นเดียวกับ NOTIFY_OWNER — รอ Owner/Staff LINE
+  identity architecture decision แยกต่างหากในอนาคต ก่อนจะ implement ได้จริง — Email ยังคงเป็น "(future)"
+  ตามเดิมที่หัวข้อนี้ระบุไว้แล้ว (ไม่ใช่มติใหม่ เพียงยืนยันซ้ำ)
+- UI การตั้งค่า Report (`reportSettings`) ต้องไม่แสดงตัวเลือกช่องทาง LINE เป็นตัวเลือกที่ใช้งานได้จริงใน V1
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: `deliveredChannels[]` (หัวข้อ 5) และรายชื่อช่องทาง "Dashboard, LINE,
+Email (future)" ของหัวข้อนี้ยังคงอยู่ตามเดิมทั้งหมด (ไม่ลบ ไม่เปลี่ยน enum) — มตินี้ระบุแค่ขอบเขตการส่งมอบจริง
+ของ Phase 8 V1 ว่าครอบคลุมเฉพาะเส้นทางที่มี spec ครบ (Dashboard) สอดคล้องกับหลัก "ห้ามเดา business
+rule"/"ห้าม implement Owner/Staff LINE identity" ของ Phase 7 NOTIFY_OWNER Decision ทุกประการ
+
+### Report Period Boundaries — Merchant-Local Timezone — Phase 8 Architecture Decision (Locked, 2026-08-17)
+
+**ขอบเขต**: มตินี้ระบุวิธีคำนวณ `periodStart`/`periodEnd` ของ Report (Daily/Weekly/Monthly) และของ
+`merchantDailyStats/{merchantId_date}` document id — เอกสารก่อนหน้านี้ไม่เคยระบุว่าต้องใช้ timezone ของ
+merchant เองหรือ UTC ในการตัดขอบวัน แม้หัวข้อ 0 จะระบุหลักการทั่วไปไว้แล้วว่าระบบต้อง "timezone-aware ไม่
+hard-code เป็นเวลาไทยทั้งระบบ" — ไม่กระทบ field `periodStart`/`periodEnd` ที่มีอยู่แล้วในหัวข้อ 5 ไม่ override
+ข้อความใดที่มีอยู่เดิม:
+
+- Report period boundaries ต้องคำนวณจาก **`merchants/{merchantId}.timezone` ของแต่ละร้านเอง** ("เที่ยงคืนถึง
+  เที่ยงคืน" ตาม timezone ของร้านนั้น) ผ่าน `Intl.DateTimeFormat` ของ Node runtime (built-in, ไม่เพิ่ม
+  dependency ใหม่) — **ไม่ใช้ UTC-day boundary แบบเดียวกับ internal key ของ `dailyAutomationBatch`** (Phase
+  6) เพราะ key นั้นเป็น internal safety-limit key ที่ไม่มีใครเห็น ในขณะที่ period ของ Report เป็นข้อมูลที่
+  Owner อ่านตรงๆ (วันที่ใน Dashboard/Snapshot)
+- `merchantDailyStats/{merchantId_date}` document id ใช้ `YYYY-MM-DD` ตาม merchant-local calendar day
+  เดียวกันนี้ ไม่ใช่ UTC date
+- มตินี้จำกัดเฉพาะ Report/`merchantDailyStats` เท่านั้น — **ไม่เปลี่ยน** `dailyAutomationBatch`'s UTC-based
+  `todayKey` ของ Phase 6 (ยังคงเป็น internal idempotency key ที่ยอมรับ trade-off เดิมได้ตามเอกสารเดิม)
+
+**เหตุผลที่ไม่ขัดกับ Architecture เดิม**: สอดคล้องโดยตรงกับหลักการที่มีอยู่แล้วในหัวข้อ 0 ("ต้อง
+timezone-aware ไม่ hard-code เป็นเวลาไทยทั้งระบบ") และ field `timezone` ที่มีอยู่แล้วบน
+`merchants/{merchantId}` (หัวข้อ 5) — มตินี้เพียงระบุว่าใช้ field ที่มีอยู่แล้วนี้จริงสำหรับ Report ไม่เพิ่ม
+field ใหม่ ไม่เพิ่ม dependency ใหม่ (ใช้ `Intl.DateTimeFormat` ของ Node ที่มีอยู่แล้วใน runtime)
+
 ---
 
 ## 25. Subscription / Packages / Entitlements
@@ -1403,6 +1520,8 @@ Composite indexes ที่ต้องมี (ยืนยัน/ปรับ�
 - `auditLogs`: `(merchantId, createdAt desc)`, `(merchantId, actorId, createdAt desc)`
 - `staffUsers`: `(merchantId, status)`
 - `customerIdentities`: **ไม่ต้องการ composite index** — lookup ด้วย document ID (deterministic hash) โดยตรงเสมอ
+- `merchantDailyStats` (Phase 8): `(merchantId, date)` — sum ช่วงวันที่สำหรับ `generateReport`
+- `reports` (Phase 8): `(merchantId, type, periodStart desc)`, `(merchantId, periodStart desc)` — Report History list
 
 หลักการ: ทุก query ที่ merchant-scoped ควรมี `merchantId` เป็น field แรกของ composite index เสมอ เพื่อให้ query เร็วและ security-rule-friendly
 
@@ -1607,6 +1726,8 @@ Phase 0 (internal test merchant) ทำคู่ขนานตั้งแต�
 | Phase 6 BIRTHDAY Decision | เพิ่มหัวข้อ 16 "BIRTHDAY — Deferred for Phase 6" + note บนหัวข้อ 5's `automations.trigger{}`: เอกสารก่อนหน้านี้ระบุ `BIRTHDAY` เป็น trigger type ใน `trigger{}` enum (§5, §16) และ "Promotion presets (welcome/birthday)" เป็น Phase 6 DoD (§33) โดยไม่เคยมี field วันเกิดใดๆ อยู่ใน `memberships.merchantProfile` (§5, §7) เลย และไม่มี membership profile-edit capability ใดๆ ที่ implement มาแล้วให้ populate fieldนี้ได้; มติล็อกว่า Phase 6 defer `BIRTHDAY` ทั้งหมด — คง type ไว้ใน enum เพื่อ forward compatibility เท่านั้น, ห้ามเพิ่ม field วันเกิด/profile-edit capability ใหม่, scheduled batch job ของ Phase 6 ห้าม evaluate trigger นี้, "Birthday" preset ห้ามปรากฏใน Owner UI (ส่งมอบเฉพาะ "Welcome" preset), ความพยายามใช้ตรงผ่าน API ต้องถูกปฏิเสธด้วย deterministic server-side validation — Birthday trigger/preset ที่แท้จริงรอ architecture/product decision cycle แยกต่างหากในอนาคตที่จะล็อกนิยาม field วันเกิด (รูปแบบ, PII/consent, ช่องทางกรอกค่า) — เหตุผล: หลีกเลี่ยงการเดา business rule ที่ไม่มี spec รองรับ ตาม CLAUDE.md, หลักการเดียวกับ Phase 6 CHANGE_TIER Decision ด้านบน — เป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด ไม่ลบ `BIRTHDAY` ออกจาก enum ใดๆ ไม่ลบ "Promotion presets (welcome/birthday)" ออกจากหัวข้อ 33 | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 7 NOTIFY_OWNER Decision | เพิ่มหัวข้อ 23 "NOTIFY_OWNER Delivery & Broadcast Test Send" + อัปเดต note บนหัวข้อ 16's SEND_NOTIFICATION/NOTIFY_OWNER subsection: เอกสารก่อนหน้านี้ระบุ `NOTIFY_OWNER` (§16) และ Broadcast "Test Send" (§23) โดยไม่เคยนิยาม LINE identity ของ Staff/Owner ไว้เลย (`merchantLineIdentity` เป็น field ระดับ Membership ของลูกค้าเท่านั้น ตามหัวข้อ 5/7 — `staffUsers` ไม่มี field เกี่ยวกับ LINE ใดๆ); มติล็อกว่า Phase 7 implement การส่งจริงเฉพาะ `SEND_NOTIFICATION` (เส้นทางลูกค้า ผ่าน `merchantLineIdentity` ที่มี spec ครบอยู่แล้ว) — `NOTIFY_OWNER` ยังคง FAILED-seam behavior เดิมของ Phase 6 ต่อไปอย่างไม่มีกำหนด, ห้าม implement Owner/Staff LINE identity resolution หรือ schema staff/owner identity ใหม่ใดๆ ใน Phase 7, Broadcast's Test Send ส่งไปยัง test recipient ที่ Owner กำหนดค่าเองใน `notificationSettings/{merchantId}` (configuration ล้วนๆ ไม่ผ่าน identity resolution/verification ใดๆ, ไม่สร้าง customer/staff identity semantics ใหม่) — tenant isolation/RBAC/authorization/audit/idempotency/security requirements เดิมทั้งหมด (หัวข้อ 3, 9, 10, 17, 18, 26, 27) ยังคงบังคับใช้ครบไม่เปลี่ยนแปลง — เหตุผล: หลีกเลี่ยงการเดา business rule/สร้าง identity model ใหม่ที่ไม่มี spec รองรับ ตาม CLAUDE.md, หลักการเดียวกับ Phase 6 CHANGE_TIER/BIRTHDAY Decisions — เป็นการเติมช่องว่าง ไม่ override ข้อความเดิมข้อใด ไม่ลบ `SEND_NOTIFICATION`/`NOTIFY_OWNER` ออกจาก enum ใดๆ ไม่ลบ "Test Send" ออกจาก Broadcast Flow ของหัวข้อ 23 | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 | Phase 7 Messaging API Access Token Decision | เพิ่มหัวข้อ 19 "Messaging API Channel Access Token — Phase 7 V1 Architecture Decision" + note บน Step 4/5a ของหัวข้อ 20: §35-mandated spike ต่อบัญชี LINE Developer จริง (Provider เชื่อมกับ Shop_member OA @406plisw) ยืนยันว่า `client_credentials` token issuance ใช้ได้จริงกับ LINE Login channel แต่ล้มเหลวซ้ำหลายครั้งกับ Messaging API channel ของบัญชีทดสอบนี้ (ลองทั้ง `/oauth2/v3/token`, legacy `/v2/oauth/accessToken`, และ Channel Secret ที่ reissue ใหม่หลายรอบ) แม้เอกสารเดิมหัวข้อ 19 จะระบุว่า platform ออก token เองทั้งสอง channel ผ่าน `client_credentials` ได้; มติล็อกว่า Phase 7 V1 ใช้ **Console-issued long-lived Channel Access Token** ของ Messaging API channel แทน (Owner คัดลอกมาครั้งเดียวในขั้นตอนเชื่อมต่อ) เก็บผ่าน Secret Manager reference เดียวกับ `lineChannelConfigs.messagingChannel.accessTokenRef` ที่มีอยู่แล้ว (ไม่เพิ่ม field ใหม่), ตัวแปร credential ที่ `LineAdapter` ใช้คือ `LINE_MESSAGING_CHANNEL_ACCESS_TOKEN`, ห้าม hardcode/log/expose ค่านี้ที่ใดก็ตาม — LINE Login channel ไม่กระทบ ยังคง self-issue ผ่าน `client_credentials` ตามเดิม — self-issued token สำหรับ Messaging API channel เป็น explicitly deferred item รอ revisit ในอนาคต — เหตุผล: ข้อจำกัดที่พิสูจน์แล้วจริงของ channel/account configuration นี้ผ่านการทดสอบหลายรอบ ไม่ใช่การเดา ไม่ใช่ bug ของ implementation — เป็นการเติมช่องว่าง ไม่ override หลักการ Secret Manager reference/ห้ามเก็บ secret ใน client-accessible document ที่มีอยู่เดิม ไม่เปลี่ยน `lineChannelConfigs` schema | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
+| Phase 8 Activity Stats Maintenance Decision | เพิ่มหัวข้อ 15 "Activity Stats Maintenance — Phase 8 Architecture Decision": Phase 8 Planning Review พบว่า `membership.activityStats.{lastVisitAt, firstVisitAt, visitCount30d, visitCount90d}` (ประกาศไว้แล้วที่หัวข้อ 5/7/15) ไม่เคยมี code path ใดเขียนค่าเหล่านี้ตั้งแต่ Phase 3 นอกจากค่าเริ่มต้นตอนสร้าง Membership ทำให้ `segment` recalculation ของ `dailyAutomationBatch` (Phase 6) เป็น no-op ถาวรในทางปฏิบัติ (Blocker ต่อ Phase 8 Reports' segment-based KPI); มติล็อกว่า `recordVisit()` ต้องตั้ง `firstVisitAt` (ครั้งแรกที่ยังเป็น null เท่านั้น) และ `lastVisitAt` (ทุกครั้ง) ภายใน transaction เดียวกับการเขียน `visits/{visitId}` เมื่อ `countsAsVisit=true`, ส่วน `visitCount30d`/`visitCount90d` เป็น rolling window ที่ต้องคำนวณใหม่ทุกวันโดย `dailyAutomationBatch` เดียวกับที่คำนวณ `segment` อยู่แล้ว (ไม่สร้าง batch job แยก) โดย query `visits` ด้วย composite index ที่มีอยู่แล้ว (หัวข้อ 28) — ห้าม implement เป็น counter สะสมไม่มีวันลด และห้ามเปลี่ยนเป็นคำนวณสดอย่างเดียว (จะทำให้ Automation Engine's `evaluateConditions()` ที่มีอยู่แล้วตั้งแต่ Phase 6 อ่านค่าไม่ได้) — เหตุผล: เติมช่องว่าง "ใครเขียนค่า เมื่อไหร่" ที่เอกสารเดิมไม่เคยระบุ ไม่เปลี่ยน field name/type/พฤติกรรม `segment` recalculation ที่มีอยู่แล้ว เป็นการเติมช่องว่าง ไม่ override ข้อความใดที่มีอยู่เดิม | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
+| Phase 8 Reports Decisions | เพิ่มหัวข้อ 24 สามส่วน: (1) "Report Settings Schema Location" — ล็อกว่า `reportSettings` ที่เอกสารเดิมพูดถึงในรูปประโยค ("ตาม merchant.reportSettings") แต่ไม่เคยปรากฏในตาราง schema ของหัวข้อ 5 เป็น field แบบ embedded บน `merchants/{merchantId}` (ตรงกับ pattern `staffLimits{}`/`segmentRulesConfig{}` เดิม) พร้อม field list `{ dailyEnabled, weeklyEnabled, monthlyEnabled, dailyItems[], weeklyItems[], monthlyItems[] }` ที่ item ต้องตรงกับรายการที่หัวข้อ 24 ระบุไว้แล้วเท่านั้น (2) "Report Delivery Channel Scope" — เอกสารเดิมระบุช่องทาง "Dashboard, LINE, Email (future)" โดยไม่เคยตรวจสอบว่า LINE เป็นไปได้จริงสำหรับผู้รับ Owner/Staff ซึ่งติด block เดียวกับ Phase 7 NOTIFY_OWNER Decision ที่ล็อกไว้แล้วว่าห้าม implement Owner/Staff LINE identity resolution; มติล็อกว่า Phase 8 V1 ส่งมอบเฉพาะ Dashboard delivery, `deliveredChannels[]` เก็บได้แค่ `'DASHBOARD'`, ห้ามนำ `notificationSettings.testRecipientLineUserId` มาใช้ซ้ำสำหรับ Report, LINE delivery ยังไม่มีกำหนดเวลาเช่นเดียวกับ NOTIFY_OWNER (3) "Report Period Boundaries — Merchant-Local Timezone" — ล็อกว่า `periodStart`/`periodEnd` ของ Report และ document id ของ `merchantDailyStats/{merchantId_date}` ต้องคำนวณจาก `merchants/{merchantId}.timezone` ของแต่ละร้านเองผ่าน `Intl.DateTimeFormat` ของ Node runtime (ไม่เพิ่ม dependency ใหม่) ไม่ใช่ UTC-day boundary แบบ internal key ของ `dailyAutomationBatch` (Phase 6, ซึ่งไม่เปลี่ยนแปลงจากมตินี้) เพราะ Report period เป็นข้อมูลที่ Owner อ่านตรงๆ — เหตุผลทั้งสามข้อ: เติมช่องว่างที่เอกสารเดิมไม่เคยระบุ สอดคล้องกับหลักการเดิมของหัวข้อ 0/9/23 (timezone-aware, ห้ามเดา business rule, ห้าม implement Owner/Staff LINE identity) ไม่ override/ลบ field หรือ enum ใดที่มีอยู่เดิม | Current (เพิ่มเติมจากเอกสารเดิม ไม่ override) |
 
 ---
 

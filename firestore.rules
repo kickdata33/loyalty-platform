@@ -170,6 +170,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Phase 8 — Reports (§5, §24, §26). Same "server is the only path" reasoning as every prior
+    // phase — the Dashboard reads `merchantDailyStats`/`reports` through the protected API routes
+    // (`/api/reports`, `/api/report-settings`) only, never a direct client Firestore read/write.
+    // `reports` is additionally the FROZEN Snapshot record (§24) — no update/delete path exists
+    // anywhere in this codebase, client or server, once written.
+    match /merchantDailyStats/{statsId} {
+      allow read, write: if false;
+    }
+    match /reports/{reportId} {
+      allow read, write: if false;
+    }
+
     // Everything else stays denied by Firestore's own default (no matching rule = no access) —
     // deliberately no catch-all `match /{document=**}` here to keep this file limited to the
     // collections that actually exist; add a new explicit match block, not a broad wildcard, when

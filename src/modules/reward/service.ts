@@ -3,6 +3,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { writeAuditLog } from "@/modules/audit/service";
 import { writeEvent } from "@/modules/event/service";
 import { getMembership, loadMembershipForMerchantTx } from "@/modules/membership/service";
+import type { MembershipRecord } from "@/modules/membership/types";
 import {
   applyFifoConsumption,
   planFifoConsumption,
@@ -350,6 +351,7 @@ export async function redeemReward(ctx: AuthContext, input: RedeemRewardInput): 
       countsAsVisit: true,
       relatedRefs: { pointsLedgerEntryId: ledgerRef.id, voucherInstanceId: voucherRef.id },
       createdBy: ctx.authUid,
+      currentFirstVisitAt: membership.activityStats.firstVisitAt,
     });
 
     writeEvent(tx, {
@@ -366,7 +368,6 @@ export async function redeemReward(ctx: AuthContext, input: RedeemRewardInput): 
 
     recordIdempotencyKey(tx, ctx.merchantId, "reward.redeem", input.idempotencyKey, voucherRef.id);
 
-    void membership; // loaded for tenant-check + transaction-read-before-write ordering only
     return { voucherId: voucherRef.id, isReplay: false };
   });
 
@@ -452,6 +453,14 @@ export async function confirmVoucherUse(ctx: AuthContext, input: ConfirmVoucherU
     const sourceLedgerReversed =
       sourceLedgerSnap.exists && Boolean((sourceLedgerSnap.data() as { reversedBy?: string }).reversedBy);
 
+    // §15 Activity Stats Maintenance (Phase 8, Locked): this flow never loaded the membership
+    // document before (only the voucher, which carries `membershipId`) — `recordVisit` needs its
+    // current `firstVisitAt` to decide whether to set it, and that read must happen here, in the
+    // READS phase, never inside `recordVisit` itself (called after writes below).
+    const membershipSnap = await tx.get(db.collection(COLLECTIONS.memberships).doc(voucher.membershipId));
+    if (!membershipSnap.exists) throw new NotFoundError(`Membership ${voucher.membershipId} not found.`);
+    const currentFirstVisitAt = (membershipSnap.data() as MembershipRecord).activityStats.firstVisitAt;
+
     assertVoucherIsUsable(voucher, now, sourceLedgerReversed);
 
     // ---- WRITES ----
@@ -470,6 +479,7 @@ export async function confirmVoucherUse(ctx: AuthContext, input: ConfirmVoucherU
       countsAsVisit: true,
       relatedRefs: { voucherInstanceId: voucher.id },
       createdBy: ctx.authUid,
+      currentFirstVisitAt,
     });
 
     writeEvent(tx, {

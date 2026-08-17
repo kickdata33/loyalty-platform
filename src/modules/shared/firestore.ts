@@ -52,6 +52,9 @@ export const COLLECTIONS = {
   lineChannelConfigs: "lineChannelConfigs",
   notificationSettings: "notificationSettings",
   notificationLog: "notificationLog",
+  // Phase 8 — Reports (§5, §24)
+  reports: "reports",
+  merchantDailyStats: "merchantDailyStats",
 } as const;
 
 /** Sub-collection path helper: `merchants/{merchantId}/branches`. */

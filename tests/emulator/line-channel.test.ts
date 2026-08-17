@@ -10,7 +10,7 @@ import {
 import { AuthorizationError } from "@/modules/shared/errors";
 import { InMemorySecretStore, setSecretStoreForTesting } from "@/modules/shared/secret-store";
 
-import { addStaffFixture, createMerchantFixture } from "./setup";
+import { addStaffFixture, createMerchantFixture, uniqueId } from "./setup";
 
 /**
  * `lineChannelConfigs` connection wizard (§19, §20, §26) — RBAC (Owner-only per §9's "ห้ามจัดการ
@@ -100,12 +100,22 @@ describe("verifyWebhookSignature — HMAC verification", () => {
 describe("resolveMerchantIdFromWebhookDestination — tenant resolution by bot userId, never channelId", () => {
   it("resolves the correct merchant by botUserId and never matches on channelId alone", async () => {
     const { ownerCtx, merchantId } = await createMerchantFixture();
-    await connectLineChannel(ownerCtx, validInput, "https://example.test", fakeClient);
+    // Unique per test — NOT the shared top-of-file `fakeClient`/`validInput`. This query scans
+    // `lineChannelConfigs` across every merchant this emulator run has ever connected (the
+    // `connectLineChannel` describe block above connects several more with the exact same fixed
+    // fake value), so reusing that fixed botUserId here would non-deterministically resolve to
+    // whichever merchant happened to connect with it first, not necessarily this test's own
+    // merchant — a pre-existing test-isolation bug, not a production `resolveMerchantIdFrom-
+    // WebhookDestination` defect (real LINE botUserIds are unique per channel by construction).
+    const uniqueBotUserId = uniqueId("Ubotuserid");
+    const uniqueInput = { ...validInput, messagingChannelId: uniqueId("msg-channel") };
+    const scopedFakeClient: LineProvisioningClient = { ...fakeClient, getBotUserId: async () => uniqueBotUserId };
+    await connectLineChannel(ownerCtx, uniqueInput, "https://example.test", scopedFakeClient);
 
-    const resolved = await resolveMerchantIdFromWebhookDestination("Ubotuserid1234567890");
+    const resolved = await resolveMerchantIdFromWebhookDestination(uniqueBotUserId);
     expect(resolved).toBe(merchantId);
 
-    const notFound = await resolveMerchantIdFromWebhookDestination(validInput.messagingChannelId);
+    const notFound = await resolveMerchantIdFromWebhookDestination(uniqueInput.messagingChannelId);
     expect(notFound).toBeNull(); // channelId is NOT destination — must not accidentally match
   });
 });

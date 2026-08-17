@@ -11,6 +11,7 @@ import {
   getAutomation,
   setAutomationStatus,
 } from "@/modules/promotion-automation/service";
+import { generateReport } from "@/modules/report/service";
 import { confirmVoucherUse, createRewardTemplate, redeemReward } from "@/modules/reward/service";
 import { ConflictError, ValidationError } from "@/modules/shared/errors";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
@@ -425,5 +426,29 @@ describe("Coupon Issue/Redeem — concurrency safety (emulator)", () => {
     expect(fulfilled.length).toBe(1);
     const rejected = results.filter((r) => r.status === "rejected");
     expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+  });
+});
+
+describe("Report Generation — concurrency safety (emulator, §24 Snapshot Pattern, Phase 8)", () => {
+  it("three concurrent generateReport calls for the SAME period never produce more than one report", async () => {
+    const { merchantId } = await createMerchantFixture();
+    await getDb()
+      .collection(COLLECTIONS.merchantDailyStats)
+      .doc(`${merchantId}_2026-03-01`)
+      .set({ merchantId, date: "2026-03-01", pointsEarned: 7 });
+
+    const params = {
+      merchantId,
+      type: "daily" as const,
+      periodStartDateKey: "2026-03-01",
+      periodEndDateKeyInclusive: "2026-03-01",
+      periodStart: new Date("2026-03-01T00:00:00Z"),
+      periodEnd: new Date("2026-03-02T00:00:00Z"),
+    };
+    const results = await Promise.all([generateReport(params), generateReport(params), generateReport(params)]);
+    expect(new Set(results).size).toBe(1); // all three resolved to the SAME reportId
+
+    const allDocs = await getDb().collection(COLLECTIONS.reports).where("merchantId", "==", merchantId).get();
+    expect(allDocs.size).toBe(1); // exactly one report document was ever created — no duplicate, no overwrite race
   });
 });

@@ -294,6 +294,31 @@
         { "fieldPath": "merchantId", "order": "ASCENDING" },
         { "fieldPath": "activityStats.segment", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "merchantDailyStats",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "date", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "reports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "periodStart", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "reports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "periodStart", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

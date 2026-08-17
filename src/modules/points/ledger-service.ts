@@ -334,6 +334,15 @@ export function recordVisit(
     countsAsVisit: boolean;
     relatedRefs: VisitRelatedRefs;
     createdBy: string;
+    /** §15 "Activity Stats Maintenance" (Phase 8, Locked) — the membership's current
+     * `activityStats.firstVisitAt`, from a read the caller already performed earlier in the SAME
+     * transaction (never fetched fresh here — every caller of `recordVisit` does its own writes
+     * before/around this call, and Firestore transactions forbid reads after writes). `null` means
+     * this is the member's first-ever counted visit, so `firstVisitAt` gets set now too; a
+     * Timestamp means it's already set and must be left untouched. Ignored when
+     * `countsAsVisit=false` — corrections/automation bonuses are never "a visit" (§15) and must
+     * never perturb `activityStats`. */
+    currentFirstVisitAt: Timestamp | null;
   },
 ): void {
   const ref = db().collection(COLLECTIONS.visits).doc();
@@ -349,6 +358,19 @@ export function recordVisit(
   });
 
   if (params.countsAsVisit) {
+    // §15 Activity Stats Maintenance (Phase 8, Locked): `lastVisitAt` always advances to now;
+    // `firstVisitAt` is set exactly once, the first time it's still null. `visitCount30d`/`90d`
+    // are a ROLLING window, not maintained here — they're recomputed daily by
+    // `dailyAutomationBatch` (functions/src/index.ts) from the `visits` collection itself, per the
+    // same decision, to avoid a monotonically-growing counter that would never reflect "last N
+    // days" correctly.
+    tx.update(db().collection(COLLECTIONS.memberships).doc(params.membershipId), {
+      "activityStats.lastVisitAt": FieldValue.serverTimestamp(),
+      ...(params.currentFirstVisitAt === null
+        ? { "activityStats.firstVisitAt": FieldValue.serverTimestamp() }
+        : {}),
+    });
+
     writeEvent(tx, {
       merchantId: params.merchantId,
       type: "visit.recorded",
@@ -450,6 +472,7 @@ export async function earnPointsByRule(ctx: AuthContext, input: EarnPointsByRule
       countsAsVisit: true,
       relatedRefs: { pointsLedgerEntryId: ledgerRef.id },
       createdBy: ctx.authUid,
+      currentFirstVisitAt: membership.activityStats.firstVisitAt,
     });
 
     writeEvent(tx, {

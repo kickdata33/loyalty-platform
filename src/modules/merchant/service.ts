@@ -9,6 +9,7 @@ import type {
   BranchRecord,
   MerchantRecord,
   PointsExpirationPolicy,
+  ReportSettings,
   SegmentRulesConfig,
   StaffLimits,
 } from "@/modules/merchant/types";
@@ -42,6 +43,17 @@ const DEFAULT_SEGMENT_RULES: SegmentRulesConfig = {
   inactiveAfterDays: 60,
   atRiskAfterDays: 30,
   regularMinVisits30d: 3,
+};
+
+/** §24 "Report Settings Schema Location" (Phase 8, Locked) — off by default; Owner opts in via
+ * `updateReportSettings` (report/service.ts). No delivery-channel field — Dashboard-only in V1. */
+const DEFAULT_REPORT_SETTINGS: ReportSettings = {
+  dailyEnabled: false,
+  weeklyEnabled: false,
+  monthlyEnabled: false,
+  dailyItems: [],
+  weeklyItems: [],
+  monthlyItems: [],
 };
 
 const SLUG_PATTERN = /^[a-z0-9-]{3,50}$/;
@@ -115,6 +127,7 @@ export async function createMerchantWithOwner(
       staffLimits: { ...DEFAULT_STAFF_LIMITS, ...input.staffLimits },
       segmentRulesConfig: { ...DEFAULT_SEGMENT_RULES, ...input.segmentRulesConfig },
       pointsExpirationPolicy: DEFAULT_POINTS_EXPIRATION_POLICY,
+      reportSettings: DEFAULT_REPORT_SETTINGS,
       ownerUserId: input.ownerAuthUid,
       createdAt: FieldValue.serverTimestamp(),
     });
@@ -146,6 +159,20 @@ export async function createMerchantWithOwner(
   });
 
   return { merchantId: merchantRef.id, branchId: branchRef.id, staffUserId: staffRef.id };
+}
+
+/**
+ * System-level read (no `AuthContext`/permission check) for server code that already runs in a
+ * trusted context and isn't acting on behalf of a specific staff request — the same category as
+ * `dailyAutomationBatch`/`dispatchEventToAutomations` (Phase 6). Kept separate from `getMerchant`
+ * below (which enforces `MEMBER_VIEW` and is what every staff-facing call site should use
+ * instead) rather than making callers pass a fabricated `AuthContext` just to satisfy a check that
+ * doesn't apply to them.
+ */
+export async function getMerchantRecordOrThrow(merchantId: string): Promise<MerchantRecord> {
+  const snap = await getDb().collection(COLLECTIONS.merchants).doc(merchantId).get();
+  if (!snap.exists) throw new NotFoundError(`Merchant ${merchantId} not found.`);
+  return { id: snap.id, ...(snap.data() as Omit<MerchantRecord, "id">) };
 }
 
 /** Any active staff of the merchant can read their own merchant's basic settings. */

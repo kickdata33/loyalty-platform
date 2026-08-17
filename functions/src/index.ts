@@ -16,6 +16,11 @@ import type { Automation } from "../../src/modules/promotion-automation/types";
 import { SCHEDULED_TRIGGER_TYPES } from "../../src/modules/promotion-automation/types";
 import type { StaffUserClaimsSnapshot } from "../../src/modules/rbac/staff-claims";
 import { syncStaffCustomClaims } from "../../src/modules/rbac/staff-claims";
+import {
+  generateDueReportsForMerchant,
+  recomputeMemberSnapshotForMerchant,
+  updateDailyStatsForEvent,
+} from "../../src/modules/report/service";
 
 // Ambient service identity in the Cloud Functions runtime (and the emulator) — no config needed,
 // never a hard-coded credential (FINAL-ARCHITECTURE.md §1, §26).
@@ -52,6 +57,14 @@ export const onStaffUserWrite = onDocumentWritten(
  * trigger. All matching/condition/safety-limit/idempotency logic lives in
  * `promotion-automation/service.ts` (imported, not duplicated — CLAUDE.md "ห้ามมี logic ซ้ำสองที่");
  * this function is a thin adapter from the Firestore event shape to that module's own input shape.
+ *
+ * Phase 8 extends this SAME trigger with `updateDailyStatsForEvent` (§24 "Snapshot Pattern" real-
+ * time half) — another consumer of the same `events/{eventId}` stream, run alongside (not instead
+ * of) Automation dispatch. `Promise.all` (not `allSettled`): if either consumer throws, the whole
+ * handler throws and Cloud Functions retries the ENTIRE event — the same "let the whole event
+ * retry, idempotency makes it safe" policy §17 already documents for Automation actions, now
+ * covering both consumers, since `updateDailyStatsForEvent` is ALSO idempotent per-eventId (see
+ * its own doc comment) — a retry can never double-count or double-execute either one.
  */
 export const onEventCreate = onDocumentCreated("events/{eventId}", async (event) => {
   const snap = event.data;
@@ -60,13 +73,22 @@ export const onEventCreate = onDocumentCreated("events/{eventId}", async (event)
     merchantId: string;
     type: DomainEventType;
     membershipId?: string;
+    payload?: Record<string, unknown>;
   };
-  await dispatchEventToAutomations({
-    id: event.params.eventId,
-    merchantId: data.merchantId,
-    type: data.type,
-    membershipId: data.membershipId,
-  });
+  await Promise.all([
+    dispatchEventToAutomations({
+      id: event.params.eventId,
+      merchantId: data.merchantId,
+      type: data.type,
+      membershipId: data.membershipId,
+    }),
+    updateDailyStatsForEvent({
+      eventId: event.params.eventId,
+      merchantId: data.merchantId,
+      type: data.type,
+      payload: data.payload ?? {},
+    }),
+  ]);
 });
 
 /**
@@ -107,6 +129,34 @@ export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
 
     for (const memberDoc of membershipsSnap.docs) {
       const membership = { id: memberDoc.id, ...(memberDoc.data() as Omit<MembershipRecord, "id">) };
+      const updates: Record<string, unknown> = {};
+
+      // (0) Rolling `visitCount30d`/`visitCount90d` — §15 "Activity Stats Maintenance" (Phase 8,
+      // Locked): a ROLLING window, so it's recomputed fresh here every day from `visits` (never
+      // incremented at visit-time, which would never decay and would stop meaning "last N days").
+      // Skipped entirely for a member who has never visited (`firstVisitAt == null`) — count is 0
+      // by definition, no query needed. Uses the SAME composite index already provisioned for
+      // Phase 3 (`merchantId`, `membershipId`, `recordedAt desc`, §28) — no new index required.
+      // Not filtered by `visits.countsAsVisit` because no code path in this codebase ever writes a
+      // `visits` document with `countsAsVisit: false` (`recordVisit` only creates one when its
+      // caller has already gated on `countsAsVisit: true` — see `points/ledger-service.ts`), so the
+      // two are equivalent today; revisit this comment if a future phase adds one.
+      if (membership.activityStats.firstVisitAt) {
+        const cutoff30 = Timestamp.fromMillis(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const cutoff90 = Timestamp.fromMillis(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        const visitsRef = db.collection("visits").where("merchantId", "==", merchantId).where("membershipId", "==", membership.id);
+        const [count30Snap, count90Snap] = await Promise.all([
+          visitsRef.where("recordedAt", ">=", cutoff30).count().get(),
+          visitsRef.where("recordedAt", ">=", cutoff90).count().get(),
+        ]);
+        const visitCount30d = count30Snap.data().count;
+        const visitCount90d = count90Snap.data().count;
+        if (visitCount30d !== membership.activityStats.visitCount30d) updates["activityStats.visitCount30d"] = visitCount30d;
+        if (visitCount90d !== membership.activityStats.visitCount90d) updates["activityStats.visitCount90d"] = visitCount90d;
+        // Segment's REGULAR branch below must see today's freshly recomputed count, not the
+        // (possibly stale) value already on `membership` from before this loop iteration ran.
+        membership.activityStats.visitCount30d = visitCount30d;
+      }
 
       // (1) Segment recalculation — see function doc comment for the exact, non-invented formula.
       if (segmentRulesConfig && membership.activityStats.firstVisitAt && membership.activityStats.lastVisitAt) {
@@ -118,8 +168,12 @@ export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
         else if (membership.activityStats.visitCount30d >= segmentRulesConfig.regularMinVisits30d) nextSegment = "REGULAR";
         else nextSegment = "ACTIVE";
         if (nextSegment !== membership.activityStats.segment) {
-          await memberDoc.ref.update({ "activityStats.segment": nextSegment });
+          updates["activityStats.segment"] = nextSegment;
         }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await memberDoc.ref.update(updates);
       }
 
       // (2) INACTIVE_DAYS / SCHEDULE trigger evaluation for this member.
@@ -141,6 +195,18 @@ export const dailyAutomationBatch = onSchedule("every 24 hours", async () => {
           await executeAutomationAction({ automation, actionIndex: i, membershipId: membership.id, eventId });
         }
       }
+    }
+
+    // (2.5) Phase 8 §24 "Snapshot Pattern" — now that every membership's `activityStats.segment`
+    // for this merchant is freshly recalculated (step 1 above), snapshot the Segment distribution
+    // into today's `merchantDailyStats` doc (`recomputeMemberSnapshotForMerchant`), then generate
+    // whichever Daily/Weekly/Monthly report just became due (`generateDueReportsForMerchant`) —
+    // which reads that same freshly-written doc. Order matters: this must run AFTER the membership
+    // loop above, never before.
+    const timezone = merchantDoc.data().timezone as string | undefined;
+    if (timezone) {
+      await recomputeMemberSnapshotForMerchant(merchantId, timezone, now);
+      await generateDueReportsForMerchant(merchantId, timezone, now);
     }
 
     // (3) COUPON_EXPIRING — per-automation, scans `couponInstances` directly (uses the

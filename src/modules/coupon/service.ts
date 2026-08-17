@@ -3,7 +3,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { writeAuditLog } from "@/modules/audit/service";
 import { writeEvent } from "@/modules/event/service";
 import { getMembership, loadMembershipForMerchantTx } from "@/modules/membership/service";
-import type { Segment } from "@/modules/membership/types";
+import type { MembershipRecord, Segment } from "@/modules/membership/types";
 import { getMerchant } from "@/modules/merchant/service";
 import { recordVisit } from "@/modules/points/ledger-service";
 import { requireBranchScope, requirePermission } from "@/modules/rbac/authorization-service";
@@ -398,6 +398,7 @@ export async function issueCouponInstance(
         countsAsVisit: true,
         relatedRefs: { couponInstanceId: instanceRef.id },
         createdBy: ctx.authUid,
+        currentFirstVisitAt: membership.activityStats.firstVisitAt,
       });
     }
 
@@ -410,7 +411,6 @@ export async function issueCouponInstance(
 
     recordIdempotencyKey(tx, ctx.merchantId, "coupon.issue", params.idempotencyKey, instanceRef.id);
 
-    void membership; // loaded for tenant-check + transaction-read-before-write ordering only
     return { instanceId: instanceRef.id, code, isReplay: false };
   });
 }
@@ -621,6 +621,15 @@ export async function redeemCoupon(ctx: AuthContext, input: RedeemCouponInput): 
 
     assertCouponIsRedeemable(instance, template, now, input.branchId, merchant.timezone);
 
+    // §15 Activity Stats Maintenance (Phase 8, Locked): this flow never loaded the membership
+    // document before (only the coupon instance/template, which carry `membershipId`) —
+    // `recordVisit` needs its current `firstVisitAt` to decide whether to set it, and that read
+    // must happen here, in the READS phase, never inside `recordVisit` itself (called after writes
+    // below).
+    const membershipSnap = await tx.get(db.collection(COLLECTIONS.memberships).doc(instance.membershipId));
+    if (!membershipSnap.exists) throw new NotFoundError(`Membership ${instance.membershipId} not found.`);
+    const currentFirstVisitAt = (membershipSnap.data() as MembershipRecord).activityStats.firstVisitAt;
+
     // ---- WRITES ----
     tx.update(instanceDoc.ref, {
       status: "USED",
@@ -637,6 +646,7 @@ export async function redeemCoupon(ctx: AuthContext, input: RedeemCouponInput): 
       countsAsVisit: true,
       relatedRefs: { couponInstanceId: instance.id },
       createdBy: ctx.authUid,
+      currentFirstVisitAt,
     });
 
     writeEvent(tx, {

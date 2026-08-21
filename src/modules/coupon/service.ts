@@ -675,17 +675,29 @@ export async function redeemCoupon(ctx: AuthContext, input: RedeemCouponInput): 
   return { instanceId: result.instanceId, membershipId: result.membershipId };
 }
 
+/** The actual query — reused by both the staff-facing `getCouponHistory` (permission-gated) and
+ * the customer-portal service (authorized differently: by the caller already having resolved
+ * `membershipId` from the customer's own verified identity, never a client-supplied value). One
+ * implementation of "how do we find this membership's coupons", two authorization entry points —
+ * matching the same pattern `resolveOrCreateLineMembership` already established for customer- vs
+ * staff-facing membership access (CLAUDE.md: "ห้ามมี logic ซ้ำสองที่"). */
+export async function listCouponInstancesForMembership(
+  merchantId: string,
+  membershipId: string,
+): Promise<CouponInstance[]> {
+  const snap = await getDb()
+    .collection(COLLECTIONS.couponInstances)
+    .where("merchantId", "==", merchantId)
+    .where("membershipId", "==", membershipId)
+    .orderBy("issuedAt", "desc")
+    .get();
+  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<CouponInstance, "id">) }));
+}
+
 /** Coupon History — parallel to `getRewardHistory` (Phase 4). Every role holding COUPON_REDEEM
  * can view it (same reasoning as `listCouponTemplates`). */
 export async function getCouponHistory(ctx: AuthContext, membershipId: string): Promise<CouponInstance[]> {
   requirePermission(ctx, PERMISSIONS.COUPON_REDEEM, ctx.merchantId);
   await getMembership(ctx, membershipId); // load-then-authorize tenant check (§10); result unused
-
-  const snap = await getDb()
-    .collection(COLLECTIONS.couponInstances)
-    .where("merchantId", "==", ctx.merchantId)
-    .where("membershipId", "==", membershipId)
-    .orderBy("issuedAt", "desc")
-    .get();
-  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<CouponInstance, "id">) }));
+  return listCouponInstancesForMembership(ctx.merchantId, membershipId);
 }

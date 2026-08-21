@@ -509,17 +509,29 @@ export async function confirmVoucherUse(ctx: AuthContext, input: ConfirmVoucherU
   return { voucherId };
 }
 
+/** The actual query — reused by both the staff-facing `getRewardHistory` (permission-gated) and
+ * the customer-portal service (authorized differently: by the caller already having resolved
+ * `membershipId` from the customer's own verified identity, never a client-supplied value). One
+ * implementation of "how do we find this membership's vouchers", two authorization entry points —
+ * matching the same pattern `resolveOrCreateLineMembership` already established for customer- vs
+ * staff-facing membership access (CLAUDE.md: "ห้ามมี logic ซ้ำสองที่"). */
+export async function listVoucherInstancesForMembership(
+  merchantId: string,
+  membershipId: string,
+): Promise<VoucherInstance[]> {
+  const snap = await getDb()
+    .collection(COLLECTIONS.voucherInstances)
+    .where("merchantId", "==", merchantId)
+    .where("membershipId", "==", membershipId)
+    .orderBy("redeemedAt", "desc")
+    .get();
+  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<VoucherInstance, "id">) }));
+}
+
 /** Reward History (§33) — parallel to `getPointsHistory` in Phase 3. Every role holding
  * REWARD_REDEEM can view it (same reasoning as `listRewardTemplates`). */
 export async function getRewardHistory(ctx: AuthContext, membershipId: string): Promise<VoucherInstance[]> {
   requirePermission(ctx, PERMISSIONS.REWARD_REDEEM, ctx.merchantId);
   await getMembership(ctx, membershipId); // load-then-authorize tenant check (§10); result unused
-
-  const snap = await getDb()
-    .collection(COLLECTIONS.voucherInstances)
-    .where("merchantId", "==", ctx.merchantId)
-    .where("membershipId", "==", membershipId)
-    .orderBy("redeemedAt", "desc")
-    .get();
-  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<VoucherInstance, "id">) }));
+  return listVoucherInstancesForMembership(ctx.merchantId, membershipId);
 }

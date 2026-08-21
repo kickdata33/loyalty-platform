@@ -820,20 +820,32 @@ export async function reversePoints(ctx: AuthContext, input: ReversePointsInput)
   });
 }
 
+/** The actual query — reused by both the staff-facing `getPointsHistory` (permission-gated) and
+ * the customer-portal service (authorized differently: by the caller already having resolved
+ * `membershipId` from the customer's own verified identity, never a client-supplied value). One
+ * implementation of "how do we find this membership's ledger entries", two authorization entry
+ * points — matching the same pattern `resolveOrCreateLineMembership` already established for
+ * customer- vs staff-facing membership access (CLAUDE.md: "ห้ามมี logic ซ้ำสองที่"). */
+export async function listPointsLedgerForMembership(
+  merchantId: string,
+  membershipId: string,
+): Promise<Array<Record<string, unknown> & { id: string }>> {
+  const snap = await db()
+    .collection(COLLECTIONS.pointsLedger)
+    .where("merchantId", "==", merchantId)
+    .where("membershipId", "==", membershipId)
+    .orderBy("createdAt", "desc")
+    .get();
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 export async function getPointsHistory(
   ctx: AuthContext,
   membershipId: string,
 ): Promise<Array<Record<string, unknown> & { id: string }>> {
   requirePermission(ctx, PERMISSIONS.POINTS_VIEW_HISTORY, ctx.merchantId);
   await loadMembershipForMerchantNoTx(membershipId, ctx.merchantId);
-
-  const snap = await db()
-    .collection(COLLECTIONS.pointsLedger)
-    .where("merchantId", "==", ctx.merchantId)
-    .where("membershipId", "==", membershipId)
-    .orderBy("createdAt", "desc")
-    .get();
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return listPointsLedgerForMembership(ctx.merchantId, membershipId);
 }
 
 async function loadMembershipForMerchantNoTx(membershipId: string, merchantId: string): Promise<void> {

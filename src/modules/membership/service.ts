@@ -301,6 +301,29 @@ export async function getMembershipByCode(
   return { id: doc.id, ...data };
 }
 
+/**
+ * Looks up a membership by `(merchantId, platformCustomerId)` — the identity key
+ * `resolveOrCreateLineMembership` matches on, and the only safe way to find "this authenticated
+ * customer's own membership for this merchant" without ever trusting a client-supplied
+ * `membershipId`. Used by both `resolveOrCreateLineMembership` (below) and the customer-portal
+ * service (`@/modules/customer-portal/service`) — one query, not duplicated (CLAUDE.md: "ห้ามมี
+ * logic ซ้ำสองที่").
+ */
+export async function findMembershipByPlatformCustomer(
+  merchantId: string,
+  platformCustomerId: string,
+): Promise<MembershipRecord | null> {
+  const snap = await getDb()
+    .collection(COLLECTIONS.memberships)
+    .where("merchantId", "==", merchantId)
+    .where("platformCustomerId", "==", platformCustomerId)
+    .limit(1)
+    .get();
+  if (snap.empty) return null;
+  const doc = snap.docs[0];
+  return { id: doc.id, ...(doc.data() as Omit<MembershipRecord, "id">) };
+}
+
 export interface ResolveLineMembershipInput {
   merchantId: string;
   platformCustomerId: string;
@@ -340,14 +363,9 @@ const LINE_MEMBER_DEFAULT_DISPLAY_NAME = "สมาชิก";
  */
 export async function resolveOrCreateLineMembership(input: ResolveLineMembershipInput): Promise<string> {
   const db = getDb();
-  const existingSnap = await db
-    .collection(COLLECTIONS.memberships)
-    .where("merchantId", "==", input.merchantId)
-    .where("platformCustomerId", "==", input.platformCustomerId)
-    .limit(1)
-    .get();
-  if (!existingSnap.empty) {
-    const ref = existingSnap.docs[0].ref;
+  const existing = await findMembershipByPlatformCustomer(input.merchantId, input.platformCustomerId);
+  if (existing) {
+    const ref = db.collection(COLLECTIONS.memberships).doc(existing.id);
     // Keep `merchantLineIdentity` current (re-login refreshes linkedAt) — never touches points/
     // tags/activityStats. Only touches `merchantProfile.displayName` when a real cosmetic name was
     // actually provided this login — a transient LIFF profile-fetch failure must never revert an

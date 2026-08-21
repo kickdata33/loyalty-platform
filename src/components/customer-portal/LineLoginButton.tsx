@@ -3,22 +3,38 @@
 import { useEffect, useState } from "react";
 
 import { useLineClient } from "@/components/customer-portal/LineClientProviderContext";
+import { MemberPortalView } from "@/components/customer-portal/MemberPortalView";
+
+/** Matches `CustomerPortalView` from `@/modules/customer-portal/service` (the sanitized shape
+ * `/api/customer-portal/member` returns) — kept as a local type rather than importing the
+ * server-only module's type into client code. */
+interface MemberPortalData {
+  displayName: string;
+  memberCode: string;
+  pointsBalance: number;
+  qrCodeDataUrl: string;
+  joinedAt: string;
+  rewards: Array<{ id: string; rewardName: string; status: "AVAILABLE" | "USED" | "EXPIRED"; redeemedAt: string; usedAt: string | null }>;
+  coupons: Array<{ id: string; couponName: string; status: "AVAILABLE" | "USED" | "EXPIRED"; issuedAt: string; usedAt: string | null }>;
+  pointsHistory: Array<{ id: string; type: string; delta: number; reason: string; createdAt: string }>;
+}
 
 /**
- * Calls `LineClientProvider.login()`/`getContext()`/`getIdToken()` exclusively through
- * `useLineClient()` — never `liff.*` directly (§22). Phase 2's stub always rejects, so this
- * honestly reports "not available yet" for merchants that haven't connected LINE.
+ * Calls `LineClientProvider.login()`/`getContext()`/`getIdToken()`/`getDisplayName()` exclusively
+ * through `useLineClient()` — never `liff.*` directly (§22). Phase 2's stub always rejects, so
+ * this honestly reports "not available yet" for merchants that haven't connected LINE.
  *
  * §20's "Customer-side" flow: `liff.login()` typically completes via a full-page redirect back
  * into this same LIFF URL — this component's mount-time effect checks whether a login already
- * completed (via `getContext()`/`getIdToken()` succeeding) and, if so, finishes the flow itself by
- * sending ONLY `{ idToken }` (§21/§22 — never a client-read profile/userId) to the backend for
- * verification.
+ * completed (via `getIdToken()` succeeding) and, if so, finishes the flow itself by sending
+ * `{ idToken, displayName }` (§21/§22 — `idToken` is the only trusted identity source; `displayName`
+ * is cosmetic-only, never used for identity) to the backend for verification, then fetches the
+ * member's own portal view (member card/QR/points/rewards/coupons) via the SAME verified idToken.
  */
 export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
   const lineClient = useLineClient();
   const [message, setMessage] = useState<string | null>(null);
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [portalData, setPortalData] = useState<MemberPortalData | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -30,14 +46,26 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
         // the backend still resolves/verifies identity solely from idToken's sub claim.
         const displayName = await lineClient.getDisplayName();
         if (cancelled) return;
-        const res = await fetch("/api/customer-portal/line-login", {
+        const loginRes = await fetch("/api/customer-portal/line-login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ merchantSlug, idToken, displayName: displayName ?? undefined }),
         });
-        if (!cancelled) {
-          if (res.ok) setLoggedIn(true);
-          else setMessage("เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+        if (cancelled) return;
+        if (!loginRes.ok) {
+          setMessage("เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
+          return;
+        }
+        const memberRes = await fetch("/api/customer-portal/member", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ merchantSlug, idToken }),
+        });
+        if (cancelled) return;
+        if (memberRes.ok) {
+          setPortalData((await memberRes.json()) as MemberPortalData);
+        } else {
+          setMessage("โหลดข้อมูลสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
         }
       } catch {
         // Not logged in yet, or provider not implemented — normal pre-login state, no message.
@@ -58,8 +86,8 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
     }
   }
 
-  if (loggedIn) {
-    return <p className="text-sm text-slate-700">เข้าสู่ระบบแล้ว — บัตรสมาชิกของคุณพร้อมใช้งาน</p>;
+  if (portalData) {
+    return <MemberPortalView data={portalData} />;
   }
 
   return (

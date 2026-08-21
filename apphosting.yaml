@@ -12,7 +12,8 @@
 # creation, also manual) — see the staging deployment checklist for what's outstanding.
 #
 # NEXT_PUBLIC_FIREBASE_* values below were filled in 2026-08-21 from the registered staging Web
-# App (loyalty-platform-staging-01). NEXT_PUBLIC_APP_URL still awaits the App Hosting backend URL.
+# App (loyalty-platform-staging-01). NEXT_PUBLIC_APP_URL was filled in the same day once the App
+# Hosting backend URL was assigned.
 
 runConfig:
   minInstances: 0
@@ -44,7 +45,8 @@ env:
     availability: [BUILD, RUNTIME]
 
   # Used by /api/line/connect to register the LIFF/webhook endpoint URL — must be the App Hosting
-  # backend's own public URL, only known after the backend is created (manual step f).
+  # backend's own public URL. LINE is not configured yet (deliberately deferred); this value is
+  # still needed by connectLineChannel()'s URL construction once that flow is used.
   - variable: NEXT_PUBLIC_APP_URL
-    value: "REPLACE_ME"
+    value: "https://loyalty-platform--loyalty-platform-staging-01.asia-southeast1.hosted.app"
     availability: [BUILD, RUNTIME]

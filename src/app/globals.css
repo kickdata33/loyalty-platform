@@ -24,3 +24,14 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Native <select> dropdown popups render with a browser-controlled white background
+   regardless of page theme (unlike the closed <select> box, which inherits body's
+   theme-aware color/background fine on its own). Without this, <option> text inherits
+   --foreground, which is light gray in dark mode — unreadable against that white popup.
+   Fixed dark text (deliberately not var(--foreground), which flips light/dark with the
+   page) keeps every <option> readable, selected or not, across every <select> in the app. */
+select option {
+  color: #171717;
+  background-color: #ffffff;
+}

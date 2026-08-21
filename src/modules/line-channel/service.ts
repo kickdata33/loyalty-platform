@@ -43,13 +43,14 @@ export interface ConnectLineChannelInput {
  * LINE's documented default when `scope` is omitted from the create request — the app never sent
  * one). Every ID-token-verification code path this codebase has (§21) depends on `openid`.
  *
- * Deliberately NOT `profile` or `chat_message.write` (LINE's default) — neither is used anywhere:
- * `liff.getProfile()` is explicitly forbidden by this codebase's own architecture (never auto-merge
- * identity from LINE display name/profile picture, §6/§21 — see line-client/types.ts), and no code
- * path calls `liff.sendMessages()`. Requesting scopes nothing uses would violate "don't request
- * unnecessary scopes" for no benefit.
+ * `profile` is also required — as of the LINE display-name fix, `LiffClientProvider.getDisplayName()`
+ * calls `liff.getProfile()` for a COSMETIC-ONLY nickname (never identity/auth/tenant/permission
+ * decisions — those remain 100% derived from the verified ID token's `sub` claim, §21). This is a
+ * narrower grant than LINE's own default, which also includes `chat_message.write` — that one is
+ * deliberately excluded since no code path calls `liff.sendMessages()`; requesting a scope nothing
+ * uses would violate "don't request unnecessary scopes" for no benefit.
  */
-export const LIFF_REQUIRED_SCOPE = ["openid"] as const;
+export const LIFF_REQUIRED_SCOPE = ["openid", "profile"] as const;
 
 export interface LiffAppSummary {
   liffId: string;

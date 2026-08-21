@@ -27,4 +27,13 @@ export interface LineClientProvider {
    */
   getIdToken(): Promise<string>;
   getContext(): Promise<LineClientContext>;
+  /**
+   * Cosmetic-only display name (never identity). Backed by `liff.getProfile()`, which requires
+   * the `profile` scope in addition to `openid` — unlike `getIdToken()`'s `sub` claim, this value
+   * is NEVER verified by the backend and must never be used for identity/authorization/tenant
+   * resolution/permission decisions (§21) — only as low-stakes display text, exactly like a
+   * staff-typed `STAFF_INPUT` member's `displayName`. Resolves to `null` (never throws) when
+   * unavailable, so a transient failure here can never block login itself.
+   */
+  getDisplayName(): Promise<string | null>;
 }

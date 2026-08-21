@@ -41,12 +41,19 @@ export async function POST(request: Request) {
       verified: true,
     });
 
+    // Cosmetic only (§21) — never part of identity/authorization above (platformCustomerId/
+    // membershipId resolution is already complete and depends solely on verified.sub). A missing
+    // or empty displayName here means "no cosmetic name provided this time", not "named สมาชิก" —
+    // resolveOrCreateLineMembership() decides the actual fallback/update behavior from that.
+    const trimmedDisplayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+    const displayName = trimmedDisplayName.length > 0 ? trimmedDisplayName : null;
+
     const membershipId = await resolveOrCreateLineMembership({
       merchantId: merchant.merchantId,
       platformCustomerId,
       lineUserId: verified.sub,
       channelId: config.loginChannel.channelId,
-      displayName: typeof body.displayName === "string" ? body.displayName : "สมาชิก",
+      displayName,
     });
 
     return NextResponse.json({ membershipId }, { status: 200 });

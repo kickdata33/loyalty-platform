@@ -42,4 +42,16 @@ export class LiffClientProvider implements LineClientProvider {
     await this.ensureInit();
     return { isInClient: liff.isInClient() };
   }
+
+  /** Cosmetic only — see the interface doc comment. Never throws; any failure (missing `profile`
+   * scope, network issue, etc.) just means no cosmetic name this time, never a blocked login. */
+  async getDisplayName(): Promise<string | null> {
+    await this.ensureInit();
+    try {
+      const profile = await liff.getProfile();
+      return profile.displayName || null;
+    } catch {
+      return null;
+    }
+  }
 }

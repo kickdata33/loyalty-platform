@@ -326,7 +326,8 @@ describe("API boundary — RBAC and cross-tenant IDOR enforced end to end throug
     const merchantA = await createMerchantFixture("Merchant A");
     const merchantB = await createMerchantFixture("Merchant B");
     await createMembership(merchantA.ownerCtx, { displayName: "Zeta Cross" });
-    await createMembership(merchantB.ownerCtx, { displayName: "Zeta Cross" });
+    const membershipIdB = await createMembership(merchantB.ownerCtx, { displayName: "Zeta Cross" });
+    const { memberCode: memberCodeB } = await getMembership(merchantB.ownerCtx, membershipIdB);
 
     const res = await getMembersSearch(
       jsonRequest("http://localhost/api/members/search?q=Zeta", {
@@ -334,8 +335,11 @@ describe("API boundary — RBAC and cross-tenant IDOR enforced end to end throug
       }),
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as Array<{ merchantId: string }>;
-    expect(body).toHaveLength(1);
-    expect(body[0].merchantId).toBe(merchantB.merchantId);
+    // The sanitized response has no merchantId field (never exposed to the client) — both fixtures
+    // share the identical displayName on purpose, so the member code is what proves this is really
+    // merchant B's own record, not merchant A's leaking through.
+    const body = (await res.json()) as { memberships: Array<{ memberCode: string }> };
+    expect(body.memberships).toHaveLength(1);
+    expect(body.memberships[0].memberCode).toBe(memberCodeB);
   });
 });

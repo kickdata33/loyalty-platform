@@ -47,9 +47,9 @@ describe("Tenant isolation across two independently created merchants (emulator)
     const listA = await listMemberships(merchantA.ownerCtx);
     const listB = await listMemberships(merchantB.ownerCtx);
 
-    expect(listA.every((m) => m.merchantId === merchantA.merchantId)).toBe(true);
-    expect(listB.every((m) => m.merchantId === merchantB.merchantId)).toBe(true);
-    expect(listB.some((m) => m.merchantId === merchantA.merchantId)).toBe(false);
+    expect(listA.memberships.every((m) => m.merchantId === merchantA.merchantId)).toBe(true);
+    expect(listB.memberships.every((m) => m.merchantId === merchantB.merchantId)).toBe(true);
+    expect(listB.memberships.some((m) => m.merchantId === merchantA.merchantId)).toBe(false);
   });
 
   it("Owner B cannot read Merchant A's settings or branch list by guessing the id", async () => {

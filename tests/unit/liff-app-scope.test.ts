@@ -32,9 +32,11 @@ function fakeClient(overrides: Partial<LineProvisioningClient>): LineProvisionin
 }
 
 describe("LIFF_REQUIRED_SCOPE", () => {
-  it("includes openid and nothing unused by this codebase (profile/chat_message.write)", () => {
+  it("includes openid (ID token) and profile (cosmetic getProfile() display name) — nothing else unused by this codebase", () => {
     expect(LIFF_REQUIRED_SCOPE).toContain("openid");
-    expect(LIFF_REQUIRED_SCOPE).not.toContain("profile");
+    expect(LIFF_REQUIRED_SCOPE).toContain("profile");
+    // LINE's own default scope also includes chat_message.write — deliberately excluded, since no
+    // code path calls liff.sendMessages().
     expect(LIFF_REQUIRED_SCOPE).not.toContain("chat_message.write");
     expect(LIFF_REQUIRED_SCOPE).not.toContain("email");
   });
@@ -82,7 +84,7 @@ describe("resolveLiffApp()", () => {
     const existing: LiffAppSummary = {
       liffId: "2011129100-QQVzQBiA",
       endpointUrl: ENDPOINT_URL,
-      scope: ["openid"],
+      scope: [...LIFF_REQUIRED_SCOPE],
     };
     const createLiffApp = vi.fn();
     const updateLiffAppScope = vi.fn();

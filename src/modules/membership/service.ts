@@ -1,4 +1,4 @@
-import { FieldValue, type Transaction } from "firebase-admin/firestore";
+import { FieldValue, Timestamp, type Transaction } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";
 import { enforceEntitlementLimitTx } from "@/modules/billing-entitlement/service";
@@ -154,13 +154,69 @@ export async function loadMembershipForMerchantTx(
   return data;
 }
 
-export async function listMemberships(ctx: AuthContext): Promise<MembershipRecord[]> {
+export const MEMBER_LIST_DEFAULT_PAGE_SIZE = 20;
+const MEMBER_LIST_MAX_PAGE_SIZE = 100;
+
+export interface ListMembershipsOptions {
+  pageSize?: number;
+  /** Opaque, server-generated — from a previous page's `nextCursor`. Never a raw client-guessed
+   * value the query trusts blindly: even a forged/foreign cursor only shifts the start position
+   * within a query still hard-filtered to `ctx.merchantId` below, so it can never leak another
+   * merchant's members (§3, §26). */
+  cursor?: string | null;
+}
+
+export interface ListMembershipsPage {
+  memberships: MembershipRecord[];
+  /** `null` means this was the last page. */
+  nextCursor: string | null;
+}
+
+function encodeMembershipCursor(joinedAtMillis: number): string {
+  return Buffer.from(String(joinedAtMillis), "utf8").toString("base64url");
+}
+
+function decodeMembershipCursor(raw: string): number | null {
+  try {
+    const millis = Number(Buffer.from(raw, "base64url").toString("utf8"));
+    return Number.isFinite(millis) ? millis : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Default member list (§33 — Owner/Staff need to see the member list without already knowing a
+ * name/phone/code, e.g. right after a customer joins through LINE). Server-side cursor pagination
+ * on the existing `(merchantId asc, joinedAt desc)` index (already provisioned — see
+ * `firestore.indexes.json`) — never loads the whole collection. Newest-first, same convention as
+ * every other "recent activity" list in this codebase (audit logs, points ledger).
+ */
+export async function listMemberships(
+  ctx: AuthContext,
+  options: ListMembershipsOptions = {},
+): Promise<ListMembershipsPage> {
   requirePermission(ctx, PERMISSIONS.MEMBER_VIEW, ctx.merchantId);
-  const snap = await getDb()
+  const pageSize = Math.min(Math.max(options.pageSize ?? MEMBER_LIST_DEFAULT_PAGE_SIZE, 1), MEMBER_LIST_MAX_PAGE_SIZE);
+
+  let query = getDb()
     .collection(COLLECTIONS.memberships)
     .where("merchantId", "==", ctx.merchantId)
-    .get();
-  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<MembershipRecord, "id">) }));
+    .orderBy("joinedAt", "desc")
+    .limit(pageSize);
+
+  const cursorMillis = options.cursor ? decodeMembershipCursor(options.cursor) : null;
+  if (cursorMillis !== null) {
+    query = query.startAfter(Timestamp.fromMillis(cursorMillis));
+  }
+
+  const snap = await query.get();
+  const memberships = snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<MembershipRecord, "id">) }));
+  const last = memberships[memberships.length - 1];
+  const nextCursor =
+    memberships.length === pageSize && last ? encodeMembershipCursor(last.joinedAt.toMillis()) : null;
+
+  return { memberships, nextCursor };
 }
 
 /** `memberCode` is generated uppercase (see `generateMemberCode`) — normalizing lookup input the
@@ -170,6 +226,14 @@ function normalizeMemberCode(code: string): string {
 }
 
 const PREFIX_QUERY_LIMIT = 20;
+
+/** Very high Unicode Private Use Area code point — appending it to the upper bound turns
+ * startAt/endAt into an actual prefix match rather than an exact-match range. Firestore range
+ * queries have no native startsWith; `startAt(prefix).endAt(prefix + PREFIX_UPPER_BOUND)` is the
+ * standard idiom. Proven as a real, previously-missing fix via a live query against staging data:
+ * searching "ส" found nothing for a member actually named "สมาชิก" without this — only the exact
+ * full string ever matched before. */
+const PREFIX_UPPER_BOUND = String.fromCharCode(0xf8ff);
 
 /** `merchantId` equality is ALWAYS the first filter, combined with the field's startAt/endAt
  * range -- this needs a composite index (merchantId asc, <field> asc), see
@@ -181,7 +245,7 @@ function tenantScopedPrefixQuery(merchantId: string, field: string, prefix: stri
     .where("merchantId", "==", merchantId)
     .orderBy(field)
     .startAt(prefix)
-    .endAt(`${prefix}`)
+    .endAt(`${prefix}${PREFIX_UPPER_BOUND}`)
     .limit(PREFIX_QUERY_LIMIT);
 }
 
@@ -243,12 +307,22 @@ export interface ResolveLineMembershipInput {
   /** Verified `sub` from `verifyLineIdToken` ONLY — never a raw client-supplied value (§21). */
   lineUserId: string;
   channelId: string;
-  /** From `liff.getProfile()` — display-only, low-stakes (a nickname), unlike `lineUserId` never
+  /**
+   * From `liff.getProfile()` — display-only, low-stakes (a nickname), unlike `lineUserId` never
    * used for identity/security decisions. §21's "untrusted client input" concern is about identity
    * (who this is), not cosmetic display text, matching how `STAFF_INPUT` members' `displayName` is
-   * already fully staff-typed and unverified. */
-  displayName: string;
+   * already fully staff-typed and unverified.
+   *
+   * `null` means "no cosmetic name available this login" (LIFF profile fetch failed, scope not
+   * granted yet, etc.) — distinct from an actual empty string. On a brand-new membership this
+   * falls back to a generic placeholder; on an EXISTING membership, `null` leaves
+   * `merchantProfile.displayName` untouched rather than clobbering a previously-captured real name
+   * back to the placeholder.
+   */
+  displayName: string | null;
 }
+
+const LINE_MEMBER_DEFAULT_DISPLAY_NAME = "สมาชิก";
 
 /**
  * Customer self-service registration/login (§20 "Customer-side" flow) — no `AuthContext`, no
@@ -260,7 +334,9 @@ export interface ResolveLineMembershipInput {
  *
  * Idempotent: a customer opening the same merchant's portal again resolves the SAME Membership
  * (queried by `platformCustomerId` — itself already resolved idempotently by
- * `resolveOrCreatePlatformCustomer`, §6) rather than creating a duplicate.
+ * `resolveOrCreatePlatformCustomer`, §6) rather than creating a duplicate. Identity resolution here
+ * is keyed SOLELY on `(merchantId, platformCustomerId)` — `displayName` never participates in
+ * finding/matching a membership, only in what gets displayed once one is found or created.
  */
 export async function resolveOrCreateLineMembership(input: ResolveLineMembershipInput): Promise<string> {
   const db = getDb();
@@ -273,15 +349,21 @@ export async function resolveOrCreateLineMembership(input: ResolveLineMembership
   if (!existingSnap.empty) {
     const ref = existingSnap.docs[0].ref;
     // Keep `merchantLineIdentity` current (re-login refreshes linkedAt) — never touches points/
-    // tags/activityStats, only the LINE-identity sub-object.
-    await ref.update({
+    // tags/activityStats. Only touches `merchantProfile.displayName` when a real cosmetic name was
+    // actually provided this login — a transient LIFF profile-fetch failure must never revert an
+    // already-captured real name back to the generic placeholder.
+    const update: Record<string, unknown> = {
       merchantLineIdentity: {
         channelId: input.channelId,
         lineUserId: input.lineUserId,
         linkedAt: FieldValue.serverTimestamp(),
         friendshipStatus: "UNKNOWN",
       },
-    });
+    };
+    if (input.displayName) {
+      update["merchantProfile.displayName"] = input.displayName;
+    }
+    await ref.update(update);
     return ref.id;
   }
 
@@ -294,7 +376,7 @@ export async function resolveOrCreateLineMembership(input: ResolveLineMembership
       memberCode: generateMemberCode(ref.id),
       joinedAt: FieldValue.serverTimestamp(),
       merchantProfile: {
-        displayName: input.displayName,
+        displayName: input.displayName ?? LINE_MEMBER_DEFAULT_DISPLAY_NAME,
         phone: null,
         email: null,
         consentMarketing: false,

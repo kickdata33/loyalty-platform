@@ -26,10 +26,14 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
       try {
         const idToken = await lineClient.getIdToken();
         if (cancelled) return;
+        // Cosmetic only (§21) — getDisplayName() never throws and is never used for identity;
+        // the backend still resolves/verifies identity solely from idToken's sub claim.
+        const displayName = await lineClient.getDisplayName();
+        if (cancelled) return;
         const res = await fetch("/api/customer-portal/line-login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ merchantSlug, idToken }),
+          body: JSON.stringify({ merchantSlug, idToken, displayName: displayName ?? undefined }),
         });
         if (!cancelled) {
           if (res.ok) setLoggedIn(true);

@@ -26,4 +26,8 @@ export class NotImplementedLineClientProvider implements LineClientProvider {
   async getContext(): Promise<LineClientContext> {
     return { isInClient: false };
   }
+
+  async getDisplayName(): Promise<string | null> {
+    return null;
+  }
 }

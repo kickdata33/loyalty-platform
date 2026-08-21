@@ -42,6 +42,8 @@ export const COLLECTIONS = {
   // Phase 4 — Rewards (§5, §13)
   rewardTemplates: "rewardTemplates",
   voucherInstances: "voucherInstances",
+  // Customer self-service reward redemption (new work) — short-lived, one-time intents
+  redemptionIntents: "redemptionIntents",
   // Phase 5 — Coupons (§5, §14)
   couponTemplates: "couponTemplates",
   couponInstances: "couponInstances",

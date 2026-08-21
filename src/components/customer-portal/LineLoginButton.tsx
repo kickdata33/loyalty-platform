@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useLineClient } from "@/components/customer-portal/LineClientProviderContext";
 import { MemberPortalView } from "@/components/customer-portal/MemberPortalView";
@@ -14,6 +14,7 @@ interface MemberPortalData {
   pointsBalance: number;
   qrCodeDataUrl: string;
   joinedAt: string;
+  availableRewards: Array<{ id: string; name: string; description: string; requiredPoints: number; eligible: boolean }>;
   rewards: Array<{ id: string; rewardName: string; status: "AVAILABLE" | "USED" | "EXPIRED"; redeemedAt: string; usedAt: string | null }>;
   coupons: Array<{ id: string; couponName: string; status: "AVAILABLE" | "USED" | "EXPIRED"; issuedAt: string; usedAt: string | null }>;
   pointsHistory: Array<{ id: string; type: string; delta: number; reason: string; createdAt: string }>;
@@ -36,6 +37,22 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
   const [message, setMessage] = useState<string | null>(null);
   const [portalData, setPortalData] = useState<MemberPortalData | null>(null);
 
+  const fetchPortalData = useCallback(async (): Promise<boolean> => {
+    try {
+      const idToken = await lineClient.getIdToken();
+      const memberRes = await fetch("/api/customer-portal/member", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ merchantSlug, idToken }),
+      });
+      if (!memberRes.ok) return false;
+      setPortalData((await memberRes.json()) as MemberPortalData);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [lineClient, merchantSlug]);
+
   useEffect(() => {
     let cancelled = false;
     async function completeLoginIfAlreadyAuthenticated() {
@@ -56,15 +73,8 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
           setMessage("เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
           return;
         }
-        const memberRes = await fetch("/api/customer-portal/member", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ merchantSlug, idToken }),
-        });
-        if (cancelled) return;
-        if (memberRes.ok) {
-          setPortalData((await memberRes.json()) as MemberPortalData);
-        } else {
+        const ok = await fetchPortalData();
+        if (!cancelled && !ok) {
           setMessage("โหลดข้อมูลสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
         }
       } catch {
@@ -75,7 +85,7 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
     return () => {
       cancelled = true;
     };
-  }, [lineClient, merchantSlug]);
+  }, [lineClient, merchantSlug, fetchPortalData]);
 
   async function handleClick() {
     setMessage(null);
@@ -87,7 +97,15 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
   }
 
   if (portalData) {
-    return <MemberPortalView data={portalData} />;
+    return (
+      <MemberPortalView
+        data={portalData}
+        merchantSlug={merchantSlug}
+        onRedeemed={() => {
+          void fetchPortalData();
+        }}
+      />
+    );
   }
 
   return (

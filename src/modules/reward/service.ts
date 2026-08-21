@@ -209,13 +209,18 @@ export async function setRewardTemplateEnabled(
 /** Every role that holds REWARD_REDEEM (Owner/Manager/Staff, all of them — §9) can list templates
  * — Staff legitimately needs to know what's redeemable to offer it to a customer, same precedent
  * as `listPointRules` reusing `POINTS_VIEW_HISTORY` in Phase 3. */
+/** The actual query — reused by the staff-facing `listRewardTemplates` (permission-gated) and the
+ * customer-portal catalog (§ new work: "member sees active rewards they are eligible to redeem"),
+ * which additionally filters to `enabled` templates only. One implementation of "how do we find
+ * this merchant's reward templates", two authorization/filtering entry points. */
+export async function listRewardTemplatesForMerchant(merchantId: string): Promise<RewardTemplate[]> {
+  const snap = await getDb().collection(COLLECTIONS.rewardTemplates).where("merchantId", "==", merchantId).get();
+  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<RewardTemplate, "id">) }));
+}
+
 export async function listRewardTemplates(ctx: AuthContext): Promise<RewardTemplate[]> {
   requirePermission(ctx, PERMISSIONS.REWARD_REDEEM, ctx.merchantId);
-  const snap = await getDb()
-    .collection(COLLECTIONS.rewardTemplates)
-    .where("merchantId", "==", ctx.merchantId)
-    .get();
-  return snap.docs.map((doc) => ({ id: doc.id, ...(doc.data() as Omit<RewardTemplate, "id">) }));
+  return listRewardTemplatesForMerchant(ctx.merchantId);
 }
 
 // --- Redeem / Use (Owner/Manager/Staff — REWARD_REDEEM) -------------------------------------

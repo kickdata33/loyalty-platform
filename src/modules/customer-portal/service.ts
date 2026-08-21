@@ -3,7 +3,7 @@ import "server-only";
 import { generateMemberQrCodeDataUrl } from "@/modules/points/qr";
 import { listPointsLedgerForMembership } from "@/modules/points/ledger-service";
 import { findMembershipByPlatformCustomer } from "@/modules/membership/service";
-import { listVoucherInstancesForMembership } from "@/modules/reward/service";
+import { listRewardTemplatesForMerchant, listVoucherInstancesForMembership } from "@/modules/reward/service";
 import { listCouponInstancesForMembership } from "@/modules/coupon/service";
 import { COLLECTIONS, getDb } from "@/modules/shared/firestore";
 import type { Timestamp } from "firebase-admin/firestore";
@@ -47,12 +47,23 @@ export interface CustomerPortalPointsHistoryItem {
   createdAt: string;
 }
 
+export interface CustomerPortalAvailableReward {
+  id: string;
+  name: string;
+  description: string;
+  requiredPoints: number;
+  /** Informational only — pointsBalance >= requiredPoints at view time. The actual, authoritative
+   * check happens fresh at redemption-confirm time (`redeemReward()`), not here. */
+  eligible: boolean;
+}
+
 export interface CustomerPortalView {
   displayName: string;
   memberCode: string;
   pointsBalance: number;
   qrCodeDataUrl: string;
   joinedAt: string;
+  availableRewards: CustomerPortalAvailableReward[];
   rewards: CustomerPortalRewardItem[];
   coupons: CustomerPortalCouponItem[];
   pointsHistory: CustomerPortalPointsHistoryItem[];
@@ -88,11 +99,12 @@ export async function getCustomerPortalView(
   const membership = await findMembershipByPlatformCustomer(merchantId, platformCustomerId);
   if (!membership) return null;
 
-  const [qrCodeDataUrl, vouchers, coupons, ledgerEntries] = await Promise.all([
+  const [qrCodeDataUrl, vouchers, coupons, ledgerEntries, rewardTemplates] = await Promise.all([
     generateMemberQrCodeDataUrl(membership.memberCode),
     listVoucherInstancesForMembership(merchantId, membership.id),
     listCouponInstancesForMembership(merchantId, membership.id),
     listPointsLedgerForMembership(merchantId, membership.id),
+    listRewardTemplatesForMerchant(merchantId),
   ]);
 
   const [rewardNames, couponNames] = await Promise.all([
@@ -106,12 +118,27 @@ export async function getCustomerPortalView(
     ),
   ]);
 
+  const now = new Date();
+  const availableRewards = rewardTemplates
+    .filter((t) => t.enabled)
+    .filter((t) => !t.startAt || t.startAt.toDate() <= now)
+    .filter((t) => !t.endAt || t.endAt.toDate() >= now)
+    .filter((t) => t.stock === null || t.stock > 0)
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      requiredPoints: t.requiredPoints,
+      eligible: membership.pointsBalance >= t.requiredPoints,
+    }));
+
   return {
     displayName: membership.merchantProfile.displayName,
     memberCode: membership.memberCode,
     pointsBalance: membership.pointsBalance,
     qrCodeDataUrl,
     joinedAt: membership.joinedAt.toDate().toISOString(),
+    availableRewards,
     rewards: vouchers.map((v) => ({
       id: v.id,
       rewardName: rewardNames.get(v.rewardTemplateId) ?? "รางวัล",

@@ -123,7 +123,12 @@ export default function RewardsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-xl font-semibold">รางวัลแลกแต้ม</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">รางวัลแลกแต้ม</h1>
+        <a href="/dashboard/rewards/redeem-scan" className="rounded border px-3 py-2 text-sm">
+          สแกนแลกรางวัล (ลูกค้าแลกเอง)
+        </a>
+      </div>
       {error ? <StatusMessage tone="error" title={error} /> : null}
 
       {rewards === null ? (

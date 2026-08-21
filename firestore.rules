@@ -135,6 +135,15 @@ service cloud.firestore {
     match /voucherInstances/{voucherId} {
       allow read, write: if false;
     }
+    // Customer self-service reward redemption (new work beyond Phase 4/7's original DoD) —
+    // short-lived, one-time redemption intents (member requests -> QR -> staff scans+confirms ->
+    // atomic redeemReward() call). Same "server is the only path" reasoning: created by the
+    // customer-portal API route, read/confirmed by the staff-facing API route, both server-side
+    // (Admin SDK) — a redemption intent must never be creatable, readable, or resolvable directly
+    // from either a customer's or staff's client SDK, only through the protected API routes.
+    match /redemptionIntents/{intentId} {
+      allow read, write: if false;
+    }
 
     // Phase 5 — Coupons (§5, §14, §26). Same "server is the only path" reasoning as Reward —
     // Issue/Redeem are transactional operations (Total/Per-Member Limit checks, status

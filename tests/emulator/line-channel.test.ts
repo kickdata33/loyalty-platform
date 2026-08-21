@@ -23,7 +23,9 @@ import { addStaffFixture, createMerchantFixture, uniqueId } from "./setup";
  */
 const fakeClient: LineProvisioningClient = {
   issueLoginToken: async () => "fake-login-access-token",
+  listLiffApps: async () => [], // no pre-existing app by default — createLiffApp path is taken
   createLiffApp: async () => "1234567890-fakeliff",
+  updateLiffAppScope: async () => undefined,
   setWebhookEndpoint: async () => undefined,
   getBotUserId: async () => "Ubotuserid1234567890",
 };

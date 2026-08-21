@@ -26,29 +26,17 @@ export function LineLoginButton({ merchantSlug }: { merchantSlug: string }) {
       try {
         const idToken = await lineClient.getIdToken();
         if (cancelled) return;
-        // TEMPORARY staging-only diagnostic (see LiffClientProvider for the matching markers) —
-        // step markers + HTTP status only, never the idToken/sub/any credential value. Remove
-        // together with the markers in liff-client-provider.ts once this bug is diagnosed.
-        console.log("[liff-debug] member bootstrap: started");
         const res = await fetch("/api/customer-portal/line-login", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ merchantSlug, idToken }),
         });
         if (!cancelled) {
-          if (res.ok) {
-            console.log("[liff-debug] member bootstrap: succeeded —", res.status);
-            setLoggedIn(true);
-          } else {
-            console.log("[liff-debug] member bootstrap: failed —", res.status);
-            setMessage("เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
-          }
+          if (res.ok) setLoggedIn(true);
+          else setMessage("เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง");
         }
-      } catch (err) {
-        // Not logged in yet, or provider not implemented — normal pre-login state, no message
-        // shown to the user. Diagnostic-only: sanitized error message, never a token/credential.
-        const message = err instanceof Error ? err.message : String(err);
-        console.log("[liff-debug] pre-check threw (expected pre-login, or a real failure) —", message);
+      } catch {
+        // Not logged in yet, or provider not implemented — normal pre-login state, no message.
       }
     }
     void completeLoginIfAlreadyAuthenticated();

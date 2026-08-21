@@ -23,7 +23,9 @@ import { createMerchantFixture, uniqueId } from "./setup";
 function fakeClientWithBot(botUserId: string): LineProvisioningClient {
   return {
     issueLoginToken: async () => "fake-login-access-token",
+    listLiffApps: async () => [],
     createLiffApp: async () => "fake-liff-id",
+    updateLiffAppScope: async () => undefined,
     setWebhookEndpoint: async () => undefined,
     getBotUserId: async () => botUserId,
   };

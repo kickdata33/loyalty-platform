@@ -36,27 +36,77 @@ export interface ConnectLineChannelInput {
   loginChannelSecret: string;
 }
 
-/** Injectable seam for the real outbound LINE calls this function makes (LIFF app creation,
- * webhook URL registration) — production uses the real `fetch`-backed default; emulator tests
- * inject a fake so the RBAC/tenant-isolation/secret-handling orchestration below is fully testable
- * without ever calling out to LINE (matches `verifyLineIdToken`'s `fetchImpl` pattern). */
+/**
+ * LIFF apps must explicitly request `openid` to get `liff.getIDToken()`/`liff.getDecodedIDToken()`
+ * — without it, `liff.isLoggedIn()` is true but no ID token is ever issued (confirmed against a
+ * real staging failure: registered scope came back exactly `["profile", "chat_message.write"]`,
+ * LINE's documented default when `scope` is omitted from the create request — the app never sent
+ * one). Every ID-token-verification code path this codebase has (§21) depends on `openid`.
+ *
+ * Deliberately NOT `profile` or `chat_message.write` (LINE's default) — neither is used anywhere:
+ * `liff.getProfile()` is explicitly forbidden by this codebase's own architecture (never auto-merge
+ * identity from LINE display name/profile picture, §6/§21 — see line-client/types.ts), and no code
+ * path calls `liff.sendMessages()`. Requesting scopes nothing uses would violate "don't request
+ * unnecessary scopes" for no benefit.
+ */
+export const LIFF_REQUIRED_SCOPE = ["openid"] as const;
+
+export interface LiffAppSummary {
+  liffId: string;
+  endpointUrl: string;
+  scope: string[];
+}
+
+/** Injectable seam for the real outbound LINE calls this function makes (LIFF app listing/
+ * creation/scope update, webhook URL registration) — production uses the real `fetch`-backed
+ * default; emulator tests inject a fake so the RBAC/tenant-isolation/secret-handling orchestration
+ * below is fully testable without ever calling out to LINE (matches `verifyLineIdToken`'s
+ * `fetchImpl` pattern). */
 export interface LineProvisioningClient {
   issueLoginToken(channelId: string, channelSecret: string): Promise<string>;
-  createLiffApp(loginAccessToken: string, endpointUrl: string): Promise<string>;
+  listLiffApps(loginAccessToken: string): Promise<LiffAppSummary[]>;
+  createLiffApp(loginAccessToken: string, endpointUrl: string, scope: readonly string[]): Promise<string>;
+  updateLiffAppScope(loginAccessToken: string, liffId: string, scope: readonly string[]): Promise<void>;
   setWebhookEndpoint(messagingAccessToken: string, webhookUrl: string): Promise<void>;
   getBotUserId(messagingAccessToken: string): Promise<string>;
 }
 
-async function realCreateLiffApp(loginAccessToken: string, endpointUrl: string): Promise<string> {
+async function realListLiffApps(loginAccessToken: string): Promise<LiffAppSummary[]> {
+  const res = await fetch(LIFF_APPS_ENDPOINT, {
+    headers: { Authorization: `Bearer ${loginAccessToken}` },
+  });
+  if (!res.ok) throw new ValidationError("Failed to list LIFF apps via LIFF Server API.");
+  const data = (await res.json()) as { apps?: Array<{ liffId: string; view?: { url?: string }; scope?: string[] }> };
+  return (data.apps ?? []).map((app) => ({
+    liffId: app.liffId,
+    endpointUrl: app.view?.url ?? "",
+    scope: app.scope ?? [],
+  }));
+}
+
+async function realCreateLiffApp(loginAccessToken: string, endpointUrl: string, scope: readonly string[]): Promise<string> {
   const res = await fetch(LIFF_APPS_ENDPOINT, {
     method: "POST",
     headers: { Authorization: `Bearer ${loginAccessToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ view: { type: "full", url: endpointUrl } }),
+    body: JSON.stringify({ view: { type: "full", url: endpointUrl }, scope }),
   });
   if (!res.ok) throw new ValidationError("Failed to create LIFF app via LIFF Server API.");
   const data = (await res.json()) as { liffId?: string };
   if (!data.liffId) throw new ValidationError("LIFF Server API returned no liffId.");
   return data.liffId;
+}
+
+/** LIFF Server API's update endpoint (`PUT /liff/v1/apps/{liffId}`) takes a partial body — fields
+ * omitted here (`view`, `features`, etc.) are left untouched server-side (confirmed against LINE's
+ * official OpenAPI spec, line/line-openapi), so this can never accidentally reset the endpoint URL
+ * or anything else while only fixing scope. */
+async function realUpdateLiffAppScope(loginAccessToken: string, liffId: string, scope: readonly string[]): Promise<void> {
+  const res = await fetch(`${LIFF_APPS_ENDPOINT}/${liffId}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${loginAccessToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ scope }),
+  });
+  if (!res.ok) throw new ValidationError("Failed to update LIFF app scope via LIFF Server API.");
 }
 
 async function realSetWebhookEndpoint(messagingAccessToken: string, webhookUrl: string): Promise<void> {
@@ -78,13 +128,50 @@ async function realGetBotUserId(messagingAccessToken: string): Promise<string> {
 
 export const realLineProvisioningClient: LineProvisioningClient = {
   issueLoginToken: issueChannelAccessToken,
+  listLiffApps: realListLiffApps,
   createLiffApp: realCreateLiffApp,
+  updateLiffAppScope: realUpdateLiffAppScope,
   setWebhookEndpoint: realSetWebhookEndpoint,
   getBotUserId: realGetBotUserId,
 };
 
 function configRef(merchantId: string) {
   return getDb().collection(COLLECTIONS.lineChannelConfigs).doc(merchantId);
+}
+
+/**
+ * Idempotent, retry-safe LIFF app resolution (exported for testing — mirrors the same
+ * "check first, reuse if found" pattern `putSecretViaClient` already established for Secret
+ * Manager). Unlike `createSecret`, LINE's LIFF Server API has no ALREADY_EXISTS-style rejection —
+ * calling create again after any partial/failed `connectLineChannel()` attempt just silently
+ * makes a brand-new duplicate app. So this always lists existing apps first and reuses whichever
+ * one already has this exact endpoint URL, only creating a new one when none matches. An existing
+ * match is NEVER deleted or recreated — if its scope doesn't exactly equal `requiredScope`, it's
+ * corrected in place via one `updateLiffAppScope` call; if it already matches, this is a pure
+ * no-op read (fully idempotent on repeated calls with the same inputs).
+ */
+export async function resolveLiffApp(
+  client: LineProvisioningClient,
+  loginAccessToken: string,
+  endpointUrl: string,
+  requiredScope: readonly string[],
+): Promise<string> {
+  const existingApps = await client.listLiffApps(loginAccessToken);
+  const existing = existingApps.find((app) => app.endpointUrl === endpointUrl);
+
+  if (!existing) {
+    return client.createLiffApp(loginAccessToken, endpointUrl, requiredScope);
+  }
+
+  const currentScope = new Set(existing.scope);
+  const required = new Set(requiredScope);
+  const scopeAlreadyCorrect =
+    currentScope.size === required.size && [...required].every((s) => currentScope.has(s));
+
+  if (!scopeAlreadyCorrect) {
+    await client.updateLiffAppScope(loginAccessToken, existing.liffId, requiredScope);
+  }
+  return existing.liffId;
 }
 
 /**
@@ -127,7 +214,12 @@ export async function connectLineChannel(
 
   // Self-issue a Login channel token now (verified working, §35 spike) to provision the LIFF app.
   const loginToken = await client.issueLoginToken(input.loginChannelId, input.loginChannelSecret);
-  const liffId = await client.createLiffApp(loginToken, `${webhookBaseUrl}/m/${merchant.slug}`);
+  const liffId = await resolveLiffApp(
+    client,
+    loginToken,
+    `${webhookBaseUrl}/m/${merchant.slug}`,
+    LIFF_REQUIRED_SCOPE,
+  );
   await client.setWebhookEndpoint(input.messagingChannelAccessToken, `${webhookBaseUrl}/api/webhooks/line`);
   const botUserId = await client.getBotUserId(input.messagingChannelAccessToken);
 

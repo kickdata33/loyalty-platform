@@ -1,5 +1,3 @@
-import "server-only";
-
 import { getMessagingChannelAccessToken } from "@/modules/line-channel/service";
 import type { ChannelAdapter } from "@/modules/notification/adapters/channel-adapter";
 import { ValidationError } from "@/modules/shared/errors";

@@ -1,5 +1,3 @@
-import "server-only";
-
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
 import { writeAuditLog } from "@/modules/audit/service";

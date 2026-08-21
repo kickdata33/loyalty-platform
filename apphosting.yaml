@@ -1,0 +1,50 @@
+# Firebase App Hosting config — STAGING environment only.
+#
+# All values below are the client-safe NEXT_PUBLIC_FIREBASE_* config for the *staging* Firebase Web
+# App (loyalty-platform-staging-01) — not secrets, safe to commit (same as .env.example already
+# documents). No LINE credential, service-account key, or other secret belongs in this file — the
+# Admin SDK on App Hosting authenticates via its ambient service identity (applicationDefault()),
+# and any real secret (LINE channel tokens, etc.) must be added later via Secret Manager reference,
+# never a plain `value:` here.
+#
+# REPLACE_ME placeholders are filled in once the staging Web App is registered in the Firebase
+# Console (manual step) and once the App Hosting backend URL is known (assigned at backend
+# creation, also manual) — see the staging deployment checklist for what's outstanding.
+#
+# NEXT_PUBLIC_FIREBASE_* values below were filled in 2026-08-21 from the registered staging Web
+# App (loyalty-platform-staging-01). NEXT_PUBLIC_APP_URL still awaits the App Hosting backend URL.
+
+runConfig:
+  minInstances: 0
+  maxInstances: 1
+
+env:
+  - variable: NEXT_PUBLIC_FIREBASE_API_KEY
+    value: "AIzaSyB7O4vvcPrRaUzncn9GFCkfacJVdboWSOo"
+    availability: [BUILD, RUNTIME]
+
+  - variable: NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
+    value: "loyalty-platform-staging-01.firebaseapp.com"
+    availability: [BUILD, RUNTIME]
+
+  - variable: NEXT_PUBLIC_FIREBASE_PROJECT_ID
+    value: "loyalty-platform-staging-01"
+    availability: [BUILD, RUNTIME]
+
+  - variable: NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET
+    value: "loyalty-platform-staging-01.firebasestorage.app"
+    availability: [BUILD, RUNTIME]
+
+  - variable: NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID
+    value: "370246881669"
+    availability: [BUILD, RUNTIME]
+
+  - variable: NEXT_PUBLIC_FIREBASE_APP_ID
+    value: "1:370246881669:web:394806446b57f7b093f4ec"
+    availability: [BUILD, RUNTIME]
+
+  # Used by /api/line/connect to register the LIFF/webhook endpoint URL — must be the App Hosting
+  # backend's own public URL, only known after the backend is created (manual step f).
+  - variable: NEXT_PUBLIC_APP_URL
+    value: "REPLACE_ME"
+    availability: [BUILD, RUNTIME]

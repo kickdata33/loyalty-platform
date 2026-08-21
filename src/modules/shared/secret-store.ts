@@ -1,5 +1,3 @@
-import "server-only";
-
 /**
  * Secret storage abstraction (FINAL-ARCHITECTURE.md §1, §19, §26: "ห้ามเก็บ secret ใน source code
  * หรือ client-accessible document" — secrets referenced from Firestore, stored in Google Secret

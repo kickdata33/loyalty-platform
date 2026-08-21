@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "loyalty-platform-dev-9a0c5"
+    "default": "loyalty-platform-dev-9a0c5",
+    "staging": "loyalty-platform-staging-01"
   }
 }

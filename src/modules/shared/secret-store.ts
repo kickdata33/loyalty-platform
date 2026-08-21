@@ -19,6 +19,70 @@ export interface SecretStore {
 
 let cachedStore: SecretStore | undefined;
 
+/** gRPC status code for ALREADY_EXISTS (google.rpc.Code) — confirmed against a real staging
+ * failure: `SecretManagerServiceClient#createSecret` rejects with an error object shaped
+ * `{ code: 6, details: "Secret [...] already exists." }` when the secret name is already taken.
+ * Numeric, not a string, per google-gax's `GoogleError`. */
+const GRPC_ALREADY_EXISTS = 6;
+
+function isAlreadyExistsError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === GRPC_ALREADY_EXISTS;
+}
+
+/** The minimal slice of `SecretManagerServiceClient` `putSecretViaClient` needs — lets tests
+ * inject a fake without touching real GCP or the dynamic `@google-cloud/secret-manager` import. */
+export interface SecretManagerClientLike {
+  createSecret(request: {
+    parent: string;
+    secretId: string;
+    secret: { replication: { automatic: Record<string, never> } };
+  }): Promise<[{ name?: string | null }, ...unknown[]]>;
+  addSecretVersion(request: {
+    parent: string;
+    payload: { data: Buffer };
+  }): Promise<[{ name?: string | null }, ...unknown[]]>;
+}
+
+/**
+ * Retry-safe create-or-reuse + addVersion (exported for testing, used by `GcpSecretManagerStore`
+ * below). `putSecret` is called with a fixed, deterministic name per merchant/purpose (e.g.
+ * `line-messaging-secret-{merchantId}`) — so a retry after ANY transient failure on the
+ * `createSecret` call (seen in practice on staging: a bare `UNAVAILABLE`/502 from Secret Manager's
+ * own backend, with the create having actually succeeded server-side despite the client-visible
+ * error) must not permanently fail with `ALREADY_EXISTS` on the next attempt. Treating
+ * `ALREADY_EXISTS` as "the secret already exists, reuse it" and continuing to `addSecretVersion`
+ * makes the whole operation idempotent per name — never overwrites/deletes anything, only adds a
+ * new version, exactly like the non-retry path already did. Every other `createSecret` error
+ * (permission, invalid argument, etc.) still fails closed, unchanged.
+ */
+export async function putSecretViaClient(
+  client: SecretManagerClientLike,
+  parent: string,
+  name: string,
+  value: string,
+): Promise<string> {
+  let secretName: string;
+  try {
+    const [secret] = await client.createSecret({
+      parent,
+      secretId: name,
+      secret: { replication: { automatic: {} } },
+    });
+    if (!secret.name) throw new Error("Secret Manager createSecret returned no name.");
+    secretName = secret.name;
+  } catch (err) {
+    if (!isAlreadyExistsError(err)) throw err;
+    // Secret Manager resource names are deterministic from (parent, secretId) — no read needed.
+    secretName = `${parent}/secrets/${name}`;
+  }
+  const [version] = await client.addSecretVersion({
+    parent: secretName,
+    payload: { data: Buffer.from(value, "utf8") },
+  });
+  if (!version.name) throw new Error("Secret Manager addSecretVersion returned no name.");
+  return version.name;
+}
+
 /**
  * Real Google Secret Manager-backed implementation. Lazily constructed (same reasoning as
  * `getFirebaseAdminApp` in `src/lib/firebase/admin.ts`) so importing this module never requires
@@ -44,16 +108,7 @@ class GcpSecretManagerStore implements SecretStore {
   async putSecret(name: string, value: string): Promise<string> {
     const client = await this.getClient();
     const parent = `projects/${this.projectId()}`;
-    const [secret] = await client.createSecret({
-      parent,
-      secretId: name,
-      secret: { replication: { automatic: {} } },
-    });
-    const [version] = await client.addSecretVersion({
-      parent: secret.name,
-      payload: { data: Buffer.from(value, "utf8") },
-    });
-    return version.name!;
+    return putSecretViaClient(client, parent, name, value);
   }
 
   async getSecret(ref: string): Promise<string> {
